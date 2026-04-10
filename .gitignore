@@ -3,3 +3,4 @@ data/
 qdrant_storage/
 .venv/
 __pycache__/
+postgres_data/

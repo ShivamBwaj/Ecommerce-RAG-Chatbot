@@ -1,12 +1,18 @@
 import asyncio
 import math
 import os
+import sys
 import time
+
+# Shift Python path and working directory so that the relative prompt file paths in production code resolve properly.
+src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, src_path)
+os.chdir(src_path)
 
 from langsmith import Client
 from langsmith.evaluation.evaluator import EvaluationResult
 
-from api.agents.retrieval_generation import rag_pipeline
+from api.agents.graph import rag_agent_wrapper
 
 from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -37,9 +43,16 @@ hf = HuggingFaceEndpointEmbeddings(
     huggingfacehub_api_token=os.environ["HF_API_TOKEN"],
 )
 
-groq_api_key_2 = os.getenv("GROQ_API_KEY2")
+groq_api_keys = [
+    os.getenv("GROQ_API_KEY"),
+    os.getenv("GROQ_API_KEY2"),
+    os.getenv("GROQ_API_KEY3"),
+    os.getenv("GROQ_API_KEY4"),
+    os.getenv("GROQ_API_KEY5")
+]
+valid_groq_keys = [k for k in groq_api_keys if k]
 
-if groq_api_key_2:
+if valid_groq_keys:
     # Groq judge model for RAGAS (no langchain-groq dependency needed).
     from groq import Groq
     from langchain_core.callbacks import Callbacks
@@ -52,7 +65,7 @@ if groq_api_key_2:
         def __init__(
             self,
             *,
-            api_key: str,
+            api_keys: list[str],
             model: str = "qwen/qwen3-32b",
             run_config=None,
             cache=None,
@@ -61,8 +74,15 @@ if groq_api_key_2:
             from ragas.run_config import RunConfig
 
             super().__init__(run_config=run_config or RunConfig(), cache=cache)
-            self._client = Groq(api_key=api_key)
+            self._api_keys = api_keys
+            self._key_index = 0
+            self._client = Groq(api_key=self._api_keys[self._key_index])
             self._model = model
+
+        def _rotate_key(self):
+            self._key_index = (self._key_index + 1) % len(self._api_keys)
+            print(f"Rate limited. Rotating to GROQ_API_KEY index {self._key_index + 1}...")
+            self._client = Groq(api_key=self._api_keys[self._key_index])
 
         def is_finished(self, response: LLMResult) -> bool:
             return True
@@ -94,23 +114,48 @@ if groq_api_key_2:
                     {"role": "user", "content": prompt_text},
                 ]
 
-                try:
-                    completion = self._client.chat.completions.create(
-                        model=self._model,
-                        messages=messages,
-                        temperature=temperature,
-                        stop=stop,
-                        response_format={"type": "json_object"},
-                    )
-                except Exception:
-                    # Some Groq models/endpoints may not support response_format; fall back.
-                    completion = self._client.chat.completions.create(
-                        model=self._model,
-                        messages=messages,
-                        temperature=temperature,
-                        stop=stop,
-                    )
-                text = completion.choices[0].message.content if completion.choices else ""
+                completion = None
+                max_attempts = len(self._api_keys) * 3
+                for attempt in range(max_attempts):
+                    try:
+                        completion = self._client.chat.completions.create(
+                            model=self._model,
+                            messages=messages,
+                            temperature=temperature,
+                            stop=stop,
+                            response_format={"type": "json_object"},
+                        )
+                        break
+                    except Exception as e:
+                        err_str = str(e).lower()
+                        if "429" in err_str or "rate limit" in err_str:
+                            self._rotate_key()
+                            if attempt < max_attempts - 1:
+                                time.sleep(1)
+                                continue
+                            raise e
+                        
+                        # Some Groq models/endpoints may not support response_format; fall back.
+                        try:
+                            completion = self._client.chat.completions.create(
+                                model=self._model,
+                                messages=messages,
+                                temperature=temperature,
+                                stop=stop,
+                            )
+                            break
+                        except Exception as fb_e:
+                            fb_err_str = str(fb_e).lower()
+                            if "429" in fb_err_str or "rate limit" in fb_err_str:
+                                self._rotate_key()
+                                if attempt < max_attempts - 1:
+                                    time.sleep(1)
+                                    continue
+                                raise fb_e
+                            else:
+                                break
+
+                text = completion.choices[0].message.content if completion and completion.choices else ""
                 generations.append(Generation(text=text or ""))
 
             # Ragas pydantic_prompt expects: generations[0][i].text for BaseRagasLLM
@@ -134,15 +179,15 @@ if groq_api_key_2:
             )
 
     ragas_llm = GroqRagasLLM(
-        api_key=groq_api_key_2,
+        api_keys=valid_groq_keys,
         # Default to a generally JSON-compliant chat model; override via env if needed.
-        model=os.getenv("GROQ_EVAL_LLM_MODEL2", "llama-3.1-8b-instant"),
+        model=os.getenv("GROQ_EVAL_LLM_MODEL2", "llama-3.3-70b-versatile"),
     )
 else:
     _gemini_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not _gemini_key:
         raise ValueError(
-            "Set GROQ_API_KEY2 (preferred) or GOOGLE_API_KEY/GEMINI_API_KEY in your .env to use a judge LLM for RAGAS."
+            "Set GROQ_API_KEYs (preferred) or GOOGLE_API_KEY/GEMINI_API_KEY in your .env to use a judge LLM for RAGAS."
         )
 
     # Force n=1 to avoid Gemini "Multiple candidates is not enabled for this model".
@@ -161,9 +206,8 @@ ragas_embeddings = LangchainEmbeddingsWrapper(hf)
 def _is_rag_output_dict(d: object) -> bool:
     return (
         isinstance(d, dict)
-        and "question" in d
         and "answer" in d
-        and "retrieved_context" in d
+        and ("retrieved_context" in d or "used_context" in d)
     )
 
 
@@ -244,7 +288,7 @@ def run_rag_with_rate_limit_spacing(inputs: dict):
     """Sleep before each traced RAG call so upstream APIs see lower QPS."""
     if RAG_PIPELINE_DELAY_SECONDS > 0:
         time.sleep(RAG_PIPELINE_DELAY_SECONDS)
-    return rag_pipeline(inputs["question"], qdrant_client)
+    return rag_agent_wrapper(inputs["question"])
 
 
 def ragas_faithfulness(run, example):
@@ -255,12 +299,14 @@ def ragas_faithfulness(run, example):
             score=None,
             comment="missing RAG outputs on run (check trace / outputs nesting)",
         )
-
+    
+    question = o.get("question") or (run.inputs.get("question", "") if hasattr(run, "inputs") and run.inputs else "")
+    
     async def _score():
         sample = SingleTurnSample(
-            user_input=o["question"],
+            user_input=question,
             response=o["answer"],
-            retrieved_contexts=o["retrieved_context"],
+            retrieved_contexts=o.get("retrieved_context", o.get("used_context", [])),
         )
         scorer = Faithfulness(llm=ragas_llm)
         return await scorer.single_turn_ascore(sample)
@@ -277,11 +323,13 @@ def ragas_response_relevancy(run, example):
             comment="missing RAG outputs on run (check trace / outputs nesting)",
         )
 
+    question = o.get("question") or (run.inputs.get("question", "") if hasattr(run, "inputs") and run.inputs else "")
+
     async def _score():
         sample = SingleTurnSample(
-            user_input=o["question"],
+            user_input=question,
             response=o["answer"],
-            retrieved_contexts=o["retrieved_context"],
+            retrieved_contexts=o.get("retrieved_context", o.get("used_context", [])),
         )
         scorer = ResponseRelevancy(llm=ragas_llm, embeddings=ragas_embeddings)
         return await scorer.single_turn_ascore(sample)
@@ -297,13 +345,17 @@ def ragas_context_precision_id_based(run, example):
             score=None,
             comment="missing RAG outputs on run (check trace / outputs nesting)",
         )
+    
+    question = o.get("question") or (run.inputs.get("question", "") if hasattr(run, "inputs") and run.inputs else "")
 
     async def _score():
         ref_ids = _reference_context_ids(_example_fields(example))
         if not ref_ids:
             return math.nan
         sample = SingleTurnSample(
-            retrieved_context_ids=o["retrieved_context_ids"],
+            user_input=question,
+            response=o["answer"],
+            retrieved_context_ids=o.get("retrieved_context_ids", o.get("used_context_ids", [])),
             reference_context_ids=ref_ids,
         )
         scorer = IDBasedContextPrecision()
@@ -320,13 +372,17 @@ def ragas_context_recall_id_based(run, example):
             score=None,
             comment="missing RAG outputs on run (check trace / outputs nesting)",
         )
+    
+    question = o.get("question") or (run.inputs.get("question", "") if hasattr(run, "inputs") and run.inputs else "")
 
     async def _score():
         ref_ids = _reference_context_ids(_example_fields(example))
         if not ref_ids:
             return math.nan
         sample = SingleTurnSample(
-            retrieved_context_ids=o["retrieved_context_ids"],
+            user_input=question,
+            response=o["answer"],
+            retrieved_context_ids=o.get("retrieved_context_ids", o.get("used_context_ids", [])),
             reference_context_ids=ref_ids,
         )
         scorer = IDBasedContextRecall()

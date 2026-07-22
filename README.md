@@ -15,7 +15,7 @@ This project implements a sophisticated **Retrieval-Augmented Generation (RAG)**
 ### ✨ Key Features
 
 - **🔍 Hybrid Search**: Combines semantic (vector) search with BM25 keyword search using Reciprocal Rank Fusion (RRF)
-- **🧠 LLM-Powered Responses**: Uses Groq's `qwen/qwen3-32b` model for fast, accurate answers
+- **🧠 LLM-Powered Responses**: Uses OpenAI by default when `OPENAI_API_KEY` is set, with Groq kept as a fallback
 - **📊 Structured Output**: Returns responses with explicit product references, descriptions, and metadata
 - **🎯 RAG Evaluation**: Comprehensive evaluation framework using RAGAS metrics (Faithfulness, Relevance, Context Precision/Recall)
 - **🐳 Docker Support**: Complete containerized deployment with docker-compose
@@ -33,7 +33,8 @@ This project implements a sophisticated **Retrieval-Augmented Generation (RAG)**
                                 │
                                 ▼
                        ┌──────────────────┐
-                       │   Groq / Gemini  │
+                       │ OpenAI / Groq /  │
+                       │   Gemini LLM API │
                        │   LLM API        │
                        └──────────────────┘
 ```
@@ -62,8 +63,9 @@ This project implements a sophisticated **Retrieval-Augmented Generation (RAG)**
 - **Python 3.12+** (recommended: use [uv](https://docs.astral.sh/uv/) for dependency management)
 - **Docker Desktop** (optional, for containerized deployment)
 - **API Keys**:
-  - `GROQ_API_KEY` (required) - from [Groq Cloud](https://console.groq.com/)
-  - `GEMINI_API_KEY` or `GOOGLE_API_KEY` (optional, for evaluation)
+    - `OPENAI_API_KEY` (required for the default LLM path) - from [OpenAI](https://platform.openai.com/)
+    - `GROQ_API_KEY` (optional fallback)
+    - `GEMINI_API_KEY` or `GOOGLE_API_KEY` (optional, for evaluation)
 
 ### 1. Clone and Setup
 
@@ -80,7 +82,10 @@ uv sync
 Create a `.env` file in the project root:
 
 ```env
-# Required: Groq API key for production chatbot
+# Required: OpenAI API key for production chatbot
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Optional fallback
 GROQ_API_KEY=your_groq_api_key_here
 
 # Optional: For evaluation (RAGAS uses Gemini)

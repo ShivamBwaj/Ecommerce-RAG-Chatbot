@@ -12,6 +12,7 @@ prompts:
       Instructions:
       - You will be given a question and you need to classify it into relevant or not relevant.
       - If the question is COMPLETELY not relevant to music, CDs, or Vinyl records, return False in field "question_relevant" and set "answer" to explanation why it is not relevant.
+      - Keep the explanation short, polite, and user-friendly. If possible, mention what kinds of questions the assistant can answer instead of repeating a hard rejection.
       - If the question is relevant to our stock (music, CDs, Vinyls), return True in field "question_relevant" and set "answer" to "".
       - If the user's input contains BOTH relevant and irrelevant questions, treat it as relevant (return True in "question_relevant") so the main agent can handle the relevant part.
       - You should only answer questions about the products in stock.

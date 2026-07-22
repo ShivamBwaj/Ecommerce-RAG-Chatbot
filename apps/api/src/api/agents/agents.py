@@ -6,8 +6,7 @@ from typing import List
 
 from api.agents.utils.prompt_management import prompt_template_config
 from api.agents.utils.utils import format_ai_message
-
-import instructor
+from api.core.llm import LLM_MODEL, LLM_PROVIDER, create_llm_client
 
 
 
@@ -36,7 +35,7 @@ class AgentResponse(BaseModel):
 
 ###QnA agent node
 
-@traceable(name="agent node",run_type="llm",metadata={"ls_provider":"groq","ls_model_name":"groq/llama-3.3-70b-versatile"})
+@traceable(name="agent node",run_type="llm",metadata={"ls_provider": LLM_PROVIDER, "ls_model_name": LLM_MODEL})
 def agent_node(state)->dict:
     
     template=prompt_template_config("api/agents/prompts/qa_agent.yaml", "qa_agent")
@@ -47,11 +46,12 @@ def agent_node(state)->dict:
     for message in messages:
         conversation.append(convert_to_openai_messages(message))
 
-    client = instructor.from_provider("groq/llama-3.3-70b-versatile")
+    client = create_llm_client()
 
     response, raw_response = client.create_with_completion(
         response_model=AgentResponse,
         messages=[{"role": "system", "content": prompt},*conversation],
+        model=LLM_MODEL,
         temperature=0.5,
     )
     ai_message=format_ai_message(response)
@@ -67,11 +67,7 @@ def agent_node(state)->dict:
 
 ### intent router agent node
 
-@traceable(
-    name="intent_router_node",
-    run_type="llm",
-    metadata={"ls_provider": "groq", "ls_model_name": "llama-3.3-70b-versatile"}
-)
+@traceable(name="intent_router_node", run_type="llm", metadata={"ls_provider": LLM_PROVIDER, "ls_model_name": LLM_MODEL})
 def intent_router_node(state):
     """
     Routes user queries by determining if they are relevant to products in stock.
@@ -93,11 +89,12 @@ def intent_router_node(state):
         conversation.append(convert_to_openai_messages(message))
     
     
-    client = instructor.from_provider("groq/llama-3.3-70b-versatile")
+    client = create_llm_client()
     
     response, raw_response = client.create_with_completion(
         response_model=IntentRouterResponse,
         messages=[{"role": "system", "content": prompt},*conversation],
+        model=LLM_MODEL,
         temperature=0.5,
     )
     

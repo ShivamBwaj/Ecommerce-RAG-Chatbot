@@ -1,5 +1,3 @@
-from groq import Groq
-import instructor
 from qdrant_client import QdrantClient
 from qdrant_client.models import Document, Filter, FieldCondition, FusionQuery, MatchValue, Prefetch
 from urllib.error import HTTPError, URLError
@@ -10,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from api.agents.utils.prompt_management import prompt_template_config, prompt_template_registry
 import numpy as np
+from api.core.llm import LLM_MODEL, LLM_PROVIDER, create_llm_client
 
 class RAGUsedContext(BaseModel):
     id: str=Field(..., description="The ID of the item used to answer the question")
@@ -151,18 +150,12 @@ def build_prompt(preprocessed_context, question):
 ### Generate Answer function
 
 
-client = Groq()
-@traceable(name="generate answer",
-    run_type="llm",
-    metadata={"ls_provider":"groq","ls_model_name":"qwen/qwen3-32b"}
-
-    
-)
+@traceable(name="generate answer", run_type="llm", metadata={"ls_provider": LLM_PROVIDER, "ls_model_name": LLM_MODEL})
 def generate_answer(prompt):
     """
     Generate answer using Groq LLM.
     
-    Model: qwen/qwen3-32b
+    Model: configured via OPENAI_MODEL or GROQ_MODEL
     
     Args:
         prompt (str): The formatted prompt with context and question
@@ -170,7 +163,7 @@ def generate_answer(prompt):
     Returns:
         str: Generated answer from the LLM
     """
-    client = instructor.from_provider("groq/qwen/qwen3-32b")
+    client = create_llm_client()
     completion,raw_response = client.create_with_completion(
         messages=[
         {
@@ -178,8 +171,7 @@ def generate_answer(prompt):
             "content": prompt
         }
         ],
-        reasoning_effort="default",
-        reasoning_format="hidden",
+        model=LLM_MODEL,
         temperature=0,
         response_model=RAGGenerationResponse,
     )
@@ -192,7 +184,7 @@ def generate_answer(prompt):
             "input_tokens": raw_response.usage.prompt_tokens,
             "output_tokens": raw_response.usage.completion_tokens,
             "total_tokens": raw_response.usage.total_tokens,
-            "resoning_tokens": raw_response.usage.completion_tokens_details.reasoning_tokens
+            "resoning_tokens": getattr(getattr(raw_response.usage, "completion_tokens_details", None), "reasoning_tokens", 0)
 
         }
     return completion

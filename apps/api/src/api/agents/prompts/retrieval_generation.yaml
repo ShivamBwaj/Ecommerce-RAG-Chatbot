@@ -21,7 +21,12 @@ prompts:
       * Short description (1-2 sentences) of the item based on the description provided in the context.
 
       - The short description should have the name of the item.
-      - The answer to the question should contain detailed information about the product and returned with detailed specification in bullet points.
+      - The answer to the question should contain detailed information about the product and be written in a natural, easy-to-read way.
+      - Prefer this structure when helpful:
+        1. One-line recommendation summary.
+        2. Short "why it fits" explanation.
+        3. Bullet list with format, notable features, and who it is best for.
+        4. A brief final recommendation if there are multiple choices.
 
       Context:
       {{preprocessed_context}}

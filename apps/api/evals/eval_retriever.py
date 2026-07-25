@@ -8,8 +8,8 @@ from langsmith.evaluation.evaluator import EvaluationResult
 
 from api.agents.retrieval_generation import rag_pipeline
 
-from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import OpenAIEmbeddings
 from qdrant_client import QdrantClient
 from ragas.dataset_schema import SingleTurnSample
 from ragas.embeddings import LangchainEmbeddingsWrapper
@@ -21,8 +21,6 @@ from ragas.metrics import (
     ResponseRelevancy,
 )
 
-# Environment variables
-HF_API_TOKEN = os.environ.get("HF_API_TOKEN")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 
 # Pause before each target (RAG) run to reduce rate-limit bursts from HF / Groq / Gemini
@@ -31,10 +29,9 @@ RAG_PIPELINE_DELAY_SECONDS = float(os.getenv("RAG_PIPELINE_DELAY_SECONDS", "30")
 ls_client = Client()
 qdrant_client = QdrantClient(url=QDRANT_URL)
 
-model = "sentence-transformers/all-MiniLM-L6-v2"
-hf = HuggingFaceEndpointEmbeddings(
-    model=model,
-    huggingfacehub_api_token=os.environ["HF_API_TOKEN"],
+embeddings = OpenAIEmbeddings(
+    model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+    dimensions=int(os.getenv("OPENAI_EMBEDDING_DIMENSIONS", "1536")),
 )
 
 _gemini_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
@@ -48,7 +45,7 @@ ragas_llm = LangchainLLMWrapper(
         google_api_key=_gemini_key,
     )
 )
-ragas_embeddings = LangchainEmbeddingsWrapper(hf)
+ragas_embeddings = LangchainEmbeddingsWrapper(embeddings)
 
 
 def _is_rag_output_dict(d: object) -> bool:

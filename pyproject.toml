@@ -12,6 +12,7 @@ dependencies = [
     "ipykernel>=7.2.0",
     "langchain-google-genai>=4.2.1",
     "langchain-huggingface>=1.2.1",
+    "langchain-openai>=1.1.12",
     "langsmith>=0.7.22",
     "matplotlib>=3.10.8",
     "pydantic>=2.12.5",

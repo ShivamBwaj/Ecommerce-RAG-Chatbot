@@ -1,16 +1,16 @@
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition,MatchValue
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 from operator import add
+from api.agents.retrieval import get_item_payload_by_parent_asin
 from api.agents.tools import get_formatted_context
 from api.agents.utils.utils import get_tool_descriptions
-import numpy as np
 from typing import List, Dict, Any, Annotated
 from api.agents.agents import ToolCall, RAGUsedContext , agent_node, intent_router_node
 from langgraph.checkpoint.postgres import PostgresSaver
+from api.core.config import config as app_config
 
 
 
@@ -103,28 +103,15 @@ def run_agent(question:str,thread_id:str)->dict:
 
 def rag_agent_wrapper(question,thread_id):
 
-    qdrant_client = QdrantClient(url="http://qdrant:6333")
+    qdrant_client = QdrantClient(url=app_config.QDRANT_URL)
 
     result= run_agent(question, thread_id)
 
     used_context=[]
-    dummy_vector=np.zeros(384).tolist()
     for item in result.get("references",[]):
-        payload=qdrant_client.query_points(
-            collection_name="amazon-items-collection-01-hybrid-search",
-            query_vector=dummy_vector,
-            limit=1,
-            using="all-MiniLM-L6-v2",
-            with_payload=True,
-            query_filter=Filter(
-                must=[
-                    FieldCondition(
-                        key="parent_asin",
-                        match=MatchValue(value=item.id)
-                    )
-                ]
-            )
-        ).points[0].payload
+        payload=get_item_payload_by_parent_asin(qdrant_client, item.id)
+        if not payload:
+            continue
         image_url=payload.get("image")
         price=payload.get("price")
         if image_url:

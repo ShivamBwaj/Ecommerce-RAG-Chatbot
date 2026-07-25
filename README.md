@@ -44,7 +44,7 @@ This project implements a sophisticated **Retrieval-Augmented Generation (RAG)**
 1. User submits query via Streamlit UI
 2. FastAPI endpoint receives request
 3. **Retrieval Phase**:
-   - Query embedding via Hugging Face `sentence-transformers/all-MiniLM-L6-v2`
+   - Query embedding via OpenAI `text-embedding-3-small`
    - Hybrid search: Semantic (vector) + BM25 keyword search with RRF fusion
    - Top-k most relevant product chunks retrieved from Qdrant
 4. **Generation Phase**:
@@ -93,14 +93,20 @@ GEMINI_API_KEY=your_gemini_api_key_here
 # OR
 GOOGLE_API_KEY=your_google_api_key_here
 
-# Optional: Hugging Face token for higher rate limits
+# Optional: Hugging Face token if you switch EMBEDDING_PROVIDER back to huggingface
 HF_API_TOKEN=your_hf_token_here
 
-# Embedding model (default: sentence-transformers/all-MiniLM-L6-v2)
+# Embeddings
+EMBEDDING_PROVIDER=openai
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_EMBEDDING_DIMENSIONS=1536
 HF_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+HF_DENSE_VECTOR_NAME=all-MiniLM-L6-v2
 
 # Qdrant connection (use localhost for local, 'qdrant' for docker)
 QDRANT_URL=http://localhost:6333
+QDRANT_COLLECTION=amazon-items-collection-02-openai-small
+QDRANT_SPARSE_VECTOR_NAME=bm25
 
 # API endpoint for Streamlit UI
 API_URL=http://localhost:8000
@@ -124,9 +130,8 @@ docker run -p 6333:6333 -p 6334:6334 \
 # Activate virtual environment if using uv
 uv sync
 
-# Run the data ingestion script (if available in your project)
-# Typically you'd have a script that reads data/CDs_and_Vinyl.jsonl
-# and uploads to Qdrant with embeddings
+PYTHONPATH=apps/api/src QDRANT_URL=http://localhost:6333 \
+  python apps/api/scripts/reindex_openai_embeddings.py --recreate
 ```
 
 ### 5. Run the Application
@@ -325,7 +330,7 @@ for ref in references:
 
 The system uses **Qdrant's hybrid search** with:
 
-- **Dense vectors** (`all-MiniLM-L6-v2` via Hugging Face Inference API): Semantic similarity
+- **Dense vectors** (`text-embedding-3-small` via OpenAI): Semantic similarity
 - **Sparse vectors** (BM25): Keyword matching
 - **Reciprocal Rank Fusion (RRF)**: Combines both result sets for optimal recall
 
@@ -334,7 +339,7 @@ The system uses **Qdrant's hybrid search** with:
 prefetch=[
     Prefetch(
         query=query_embedding,
-        using="all-MiniLM-L6-v2",
+        using="text-embedding-3-small",
         limit=20  # Recall candidates from vector search
     ),
     Prefetch(
@@ -382,6 +387,19 @@ The prompt template (`retrieval_generation.yaml`) instructs the LLM to:
 ## ⚙️ Configuration & Environment
 
 ### All Environment Variables
+
+OpenAI embeddings are the default retrieval path:
+
+```env
+OPENAI_API_KEY=your_openai_api_key_here
+EMBEDDING_PROVIDER=openai
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_EMBEDDING_DIMENSIONS=1536
+QDRANT_COLLECTION=amazon-items-collection-02-openai-small
+QDRANT_SPARSE_VECTOR_NAME=bm25
+```
+
+The old Hugging Face MiniLM settings are still available only if you explicitly set `EMBEDDING_PROVIDER=huggingface`.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -439,7 +457,7 @@ tail -f logs/api.log
 
 | Component | Approx. Time |
 |-----------|--------------|
-| Hugging Face embedding | 500ms - 2s |
+| OpenAI embedding | 300ms - 1s |
 | Qdrant hybrid search | 100-300ms |
 | Groq LLM inference | 1-2s |
 | Structured output parsing | 100ms |

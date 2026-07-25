@@ -87,7 +87,7 @@ if prompt := st.chat_input("Hello! How can I assist you today?"):
     with st.chat_message("assistant"):
         ok, response_data = api_call(
             "post",
-            f"{config.API_URL}/rag",
+            f"{config.API_URL}/rag/",
             json={"query":prompt,"thread_id":session_id
             },
         )

@@ -7,6 +7,10 @@ services:
       - 8501:8501
     env_file:
       - .env
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
     restart: unless-stopped
     volumes:
       - ./apps/chatbot-ui/src:/app/apps/chatbot-ui/src
@@ -19,6 +23,11 @@ services:
       - 8000:8000
     env_file:
       - .env
+    environment:
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      - qdrant
+      - postgres
     restart: unless-stopped
     volumes:
       - ./apps/api/src:/app/apps/api/src

@@ -4,8 +4,7 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 from operator import add
-from api.agents.retrieval import get_item_payload_by_parent_asin
-from api.agents.tools import get_formatted_context
+from api.agents.tools import get_formatted_context,get_item_payload_by_parent_asin,get_formatted_reviews_context
 from api.agents.utils.utils import get_tool_descriptions
 from typing import List, Dict, Any, Annotated
 from api.agents.agents import ToolCall, RAGUsedContext , agent_node, intent_router_node
@@ -47,8 +46,23 @@ def intent_router_conditional_edges(state: State):
 #### workflow
 workflow = StateGraph(State)
 
-tools=[get_formatted_context]
-tool_node=ToolNode(tools)
+tools=[get_formatted_context,get_formatted_reviews_context]
+
+
+def handle_tool_error(error: Exception) -> str:
+    """Return a ToolMessage when a retrieval tool fails.
+
+    This lets the graph continue with a valid response for the tool call instead
+    of leaving an unanswered tool call in the persisted conversation state.
+    """
+    return (
+        "The retrieval tool could not complete this request. "
+        f"Error: {error!s}. Please answer using the available results, "
+        "or explain that no review information is currently available."
+    )
+
+
+tool_node=ToolNode(tools, handle_tool_errors=handle_tool_error)
 tool_descriptions=get_tool_descriptions(tools)
 
 workflow.add_node("agent_node",agent_node)

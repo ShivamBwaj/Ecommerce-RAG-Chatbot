@@ -1,0 +1,24 @@
+[project]
+name = "reviews-mcp-server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ShivamBwaj", email = "shivambwaj@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=3.4.7",
+    "openai>=2.30.0",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "qdrant-client>=1.17.1",
+    "api",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.12,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+api = { workspace = true }

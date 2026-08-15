@@ -35,6 +35,16 @@ prompts:
       }
       }
 
+      - Get formatted user reviews:
+      {
+      "name": "get_formatted_reviews_context",
+      "arguments": {
+          "query": "hard rock albums",
+          "item_list": ["B0000025U6", "B0000025U7"],
+          "top_k": 5
+      }
+      }
+
       CRITICAL RULES:
       - If tool_calls has values, final_answer MUST be false
       - (You cannot call tools and exit the graph in the same response)

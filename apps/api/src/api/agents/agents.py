@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from langchain_core.messages import convert_to_openai_messages
 from langsmith import traceable,get_current_run_tree
 
@@ -30,6 +30,19 @@ class AgentResponse(BaseModel):
     final_answer: bool=False
     tool_calls: List[ToolCall]=[]
 
+    @model_validator(mode="after")
+    def _tool_calls_block_final_answer(self):
+        """Enforce the prompt's CRITICAL RULE structurally.
+
+        The model sometimes returns tool_calls together with final_answer=True.
+        The prompt forbids it, but nothing stopped it, so the router ended the
+        graph and silently dropped the tool call - leaving the user with the
+        model's pre-retrieval preamble as the whole answer.
+        """
+        if self.tool_calls:
+            self.final_answer = False
+        return self
+
 
 
 
@@ -52,7 +65,7 @@ def agent_node(state)->dict:
         response_model=AgentResponse,
         messages=[{"role": "system", "content": prompt},*conversation],
         model=LLM_MODEL,
-        temperature=0.5,
+        temperature=0,
     )
 
     current_run=get_current_run_tree()
@@ -104,7 +117,7 @@ def intent_router_node(state):
         response_model=IntentRouterResponse,
         messages=[{"role": "system", "content": prompt},*conversation],
         model=LLM_MODEL,
-        temperature=0.5,
+        temperature=0,
     )
     current_run=get_current_run_tree()
     if current_run:
@@ -121,5 +134,11 @@ def intent_router_node(state):
     return {
         "question_relevant": response.question_relevant,
         "answer": response.answer,
-        "trace_id": trace_id
+        "trace_id": trace_id,
+        # State is checkpointed per thread_id, so clear the previous turn's
+        # references here - otherwise an off-topic turn (which never reaches
+        # agent_node) still renders the last turn's product cards.
+        "references": [],
+        "tool_calls": [],
+        "final_answer": False,
     }

@@ -4,6 +4,7 @@ import streamlit as st
 import requests
 from chatbot_ui.core.config import config
 import uuid
+import json
 
 st.set_page_config(
     page_title="Ecommerce Assistant",
@@ -40,6 +41,30 @@ def api_call(method, url, **kwargs):
             return True, response_data
 
         return False, response_data
+
+    except requests.exceptions.ConnectionError:
+        _show_error_popup("Connection error. Please check your network connection.")
+        return False, {"message": "Connection error"}
+    except requests.exceptions.Timeout:
+        _show_error_popup("The request timed out. Please try again later.")
+        return False, {"message": "Request timeout"}
+    except Exception as e:
+        _show_error_popup(f"An unexpected error occurred: {str(e)}")
+        return False, {"message": str(e)}
+
+def api_call_stream(method, url, **kwargs):
+
+    def _show_error_popup(message):
+        """Show error message as a popup in the top-right corner."""
+        st.session_state["error_popup"] = {
+            "visible": True,
+            "message": message,
+        }
+
+    try:
+        response = getattr(requests, method)(url, **kwargs)
+
+        return response.iter_lines()
 
     except requests.exceptions.ConnectionError:
         _show_error_popup("Connection error. Please check your network connection.")
@@ -198,24 +223,51 @@ if prompt := st.chat_input("Hello! How can I assist you today?"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        ok, response_data = api_call(
-            "post",
-            f"{config.API_URL}/rag/",
-            json={"query":prompt,"thread_id":session_id
-            },
-        )
-        
-        if ok:
-            answer = response_data.get("answer", "I couldn't generate a response this time.")
-            used_context=response_data.get("used_context","Context was not found")
-            st.session_state.used_context=used_context
-            st.session_state.trace_id = response_data.get("trace_id")
-            st.session_state.latest_feedback = None
-            st.session_state.feedback_submission_status = None
-            st.session_state.show_feedback_box = False
 
-        else:
-            answer = response_data.get("detail") or response_data.get("answer") or "Request failed"
-        st.write(answer)
-    st.session_state.messages.append({"role": "assistant", "content":answer }) 
+        status_placeholder=st.empty()
+        message_placeholder=st.empty()
+
+        for line in api_call_stream(
+            "post", 
+            f"{config.API_URL}/rag/", 
+            json={"query":prompt,"thread_id":session_id},
+            stream=True,
+            headers={"Accept": "text/event-stream"}):
+            line_text=line.decode("utf-8")
+            if line_text.startswith("data: "):
+                data=line_text[6:]  # Remove the "data: " prefix
+
+                try:
+                    output=json.loads(data)
+
+                    if output["type"]=="final_result":
+                        answer=output["data"]["answer"]
+                        used_context=output["data"]["used_context"]
+                        trace_id=output["data"]["trace_id"]
+
+                        st.session_state.used_context=used_context
+                        st.session_state.trace_id=trace_id
+                        st.session_state.messages.append({"role": "assistant", "content":answer })
+                        st.session_state.latest_feedback = None
+                        st.session_state.feedback_submission_status = None
+                        st.session_state.show_feedback_box = False
+                        status_placeholder.empty()
+                        message_placeholder.markdown(answer)
+                        break
+
+                except json.JSONDecodeError:
+                    st.markdown("""<style>
+                        @keyframes shimmer { to { background-position: -200% 0; } }
+                        .thinking {
+                        background: linear-gradient(90deg,#888 40%,#fff 50%,#888 60%) 0 0/200% auto;
+                        -webkit-background-clip: text; background-clip: text; color: transparent;
+                        animation: shimmer 1.8s linear infinite; font-style: italic;
+                        }
+                        </style>""", unsafe_allow_html=True)
+                    status_placeholder.markdown(f'<span class="thinking">{data.strip()}</span>', unsafe_allow_html=True)
+                    #status_placeholder.caption(f"*{data.strip()}*")
+                    
+
+
+        
     st.rerun()

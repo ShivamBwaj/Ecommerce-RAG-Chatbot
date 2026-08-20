@@ -62,6 +62,9 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    volumes:
+      - ./apps/items_mcp_server/src:/app/apps/items_mcp_server/src
+      - ./apps/api/src:/app/apps/api/src
 
   reviews_mcp_server:
     build:
@@ -72,3 +75,6 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    volumes:
+      - ./apps/reviews_mcp_server/src:/app/apps/reviews_mcp_server/src
+      - ./apps/api/src:/app/apps/api/src

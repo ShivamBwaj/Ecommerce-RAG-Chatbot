@@ -16,7 +16,7 @@ from api.core.embeddings import get_embedding
 
 
 @traceable(name="format retrieved context",run_type="prompt")
-def process_context(context):
+def process_items_context(context):
     formatted_context=""
 
     for id,chunk,rating in zip(context["retrieved_context_ids"], context["retrieved_context"], context["retrieved_context_ratings"]):
@@ -24,7 +24,7 @@ def process_context(context):
     return formatted_context
 
 
-def get_formatted_context(query: str, top_k: int = 5) -> str:
+def get_formatted_items_context(query: str, top_k: int = 5) -> str:
     """Get the top k context, each representing an inventory item for a given query.
 
     Args:
@@ -37,14 +37,14 @@ def get_formatted_context(query: str, top_k: int = 5) -> str:
     from qdrant_client import QdrantClient
     from api.core.config import config
 
-    context = retrieve_data(query, top_k)  
-    formatted_context = process_context(context)
+    context = retrieve_items_data(query, top_k)  
+    formatted_context = process_items_context(context)
 
     return formatted_context
 
 #### item description retrieval functions
 @traceable(name="retrieve data", run_type="retriever")
-def retrieve_data(query: str, top_k: int = 5) -> dict:
+def retrieve_items_data(query: str, top_k: int = 5) -> dict:
     query_embedding = get_embedding(query)
     qdrant_client = QdrantClient(url=config.QDRANT_URL)
     search_result = qdrant_client.query_points(

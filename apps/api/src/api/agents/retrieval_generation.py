@@ -37,15 +37,19 @@ def build_prompt(preprocessed_context, question):
 
 
 @traceable(name="generate answer", run_type="llm", metadata={"ls_provider": LLM_PROVIDER, "ls_model_name": LLM_MODEL})
-def generate_answer(prompt):
+def generate_answer(prompt, question):
     """
     Generate answer using Groq LLM.
-    
+
     Model: configured via OPENAI_MODEL or GROQ_MODEL
-    
+
     Args:
         prompt (str): The formatted prompt with context and question
-        
+        question (str): The user's question, sent as a user-role message.
+            Groq's chat template rejects a request with no user-role message
+            ("No user query found in messages") even though OpenAI accepts
+            system-only requests, so this can't be folded into the system prompt.
+
     Returns:
         str: Generated answer from the LLM
     """
@@ -55,6 +59,10 @@ def generate_answer(prompt):
         {
             "role": "system",
             "content": prompt
+        },
+        {
+            "role": "user",
+            "content": question
         }
         ],
         model=LLM_MODEL,
@@ -84,7 +92,7 @@ def rag_pipeline(query,qdrant_client,top_k=5):
     retrieved_context=retrieve_items_data(query, top_k)
     preprocessed_context=process_context(retrieved_context)
     prompt=build_prompt(preprocessed_context, query)
-    answer=generate_answer(prompt)
+    answer=generate_answer(prompt, query)
 
     final_result = {
         "answer": answer.answer,

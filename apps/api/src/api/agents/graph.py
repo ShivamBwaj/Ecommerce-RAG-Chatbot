@@ -26,6 +26,13 @@ from api.agents.agents import (
 from langgraph.checkpoint.postgres import PostgresSaver
 from api.core.config import config as app_config
 import json
+import logging
+import time
+
+# Free-tier LLM keys (e.g. Groq) rate-limit and back off for several seconds per
+# call; with multiple agent hops per turn that can compound past what a client
+# or proxy will wait on. Bail out with a clear message instead of hanging.
+STREAM_TIMEOUT_SECONDS = 55
 
 
 class State(BaseModel):
@@ -87,11 +94,15 @@ def handle_tool_error(error: Exception) -> str:
 
     This lets the graph continue with a valid response for the tool call instead
     of leaving an unanswered tool call in the persisted conversation state.
+    The message is deliberately generic - the underlying error (HTTP status,
+    stack trace, connection string, etc.) is logged server-side, not handed to
+    the LLM, since it otherwise ends up quoted verbatim in the user-facing answer.
     """
+    logging.getLogger(__name__).warning("Tool call failed: %s", error)
     return (
-        "The tool could not complete this request. "
-        f"Error: {error!s}. Please answer using the available results, "
-        "or explain that the action could not be completed."
+        "The tool could not complete this request due to a temporary issue. "
+        "Please answer using the available results, or explain that the action "
+        "could not be completed and ask the user to try again shortly."
     )
 
 
@@ -201,6 +212,9 @@ def rag_agent_stream_wrapper(question: str, thread_id: str, user_id: str = "", c
             "thread_id": thread_id,
         }
     }
+    start_time = time.monotonic()
+    result = None
+    timed_out = False
     with PostgresSaver.from_conn_string(app_config.POSTGRES_DSN) as checkpointer:
         graph = workflow.compile(checkpointer=checkpointer)
         for chunk in graph.stream(
@@ -208,12 +222,29 @@ def rag_agent_stream_wrapper(question: str, thread_id: str, user_id: str = "", c
             config=config,
             stream_mode=["updates", "debug", "values"],
         ):
+            if time.monotonic() - start_time > STREAM_TIMEOUT_SECONDS:
+                timed_out = True
+                break
+
             processed_chunk = _process_graph_event(chunk)
 
             if processed_chunk:
                 yield _string_for_sse(processed_chunk)
             if chunk[0] == "values":
                 result = chunk[1]
+
+    if timed_out or result is None:
+        yield _string_for_sse(json.dumps(
+            {
+                "type": "final_result",
+                "data": {
+                    "answer": "This is taking longer than usual, likely an LLM provider rate limit. Please try again in a moment.",
+                    "used_context": [],
+                    "trace_id": "",
+                },
+            }
+        ))
+        return
 
     used_context = []
     for item in result.get("references", []):

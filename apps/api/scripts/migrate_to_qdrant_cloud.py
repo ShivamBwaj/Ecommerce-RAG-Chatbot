@@ -14,6 +14,7 @@ import os
 
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client.models import PointStruct
 
 DEFAULT_COLLECTIONS = [
     "amazon-items-collection-01-hybrid-search",
@@ -66,9 +67,13 @@ def migrate_collection(source: QdrantClient, target: QdrantClient, name: str, ba
         if not records:
             break
 
+        points = [
+            PointStruct(id=record.id, vector=record.vector, payload=record.payload)
+            for record in records
+        ]
         target.upsert(
             collection_name=name,
-            points=records,
+            points=points,
             wait=True,
         )
         migrated += len(records)
@@ -99,7 +104,7 @@ def main() -> None:
         )
 
     source = QdrantClient(url=args.source_url)
-    target = QdrantClient(url=args.target_url, api_key=args.target_api_key)
+    target = QdrantClient(url=args.target_url, api_key=args.target_api_key, timeout=60)
 
     for name in args.collections:
         migrated = migrate_collection(source, target, name, args.batch_size, args.recreate)

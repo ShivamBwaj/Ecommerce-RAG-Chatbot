@@ -3,13 +3,18 @@ import math
 import os
 import time
 
+from dotenv import load_dotenv
+
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+load_dotenv(os.path.join(_repo_root, ".env"))
+
 from langsmith import Client
 from langsmith.evaluation.evaluator import EvaluationResult
 
 from api.agents.retrieval_generation import rag_pipeline
+from api.core.embeddings import get_embedding, get_embeddings
 
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import OpenAIEmbeddings
 from qdrant_client import QdrantClient
 from ragas.dataset_schema import SingleTurnSample
 from ragas.embeddings import LangchainEmbeddingsWrapper
@@ -29,10 +34,20 @@ RAG_PIPELINE_DELAY_SECONDS = float(os.getenv("RAG_PIPELINE_DELAY_SECONDS", "30")
 ls_client = Client()
 qdrant_client = QdrantClient(url=QDRANT_URL)
 
-embeddings = OpenAIEmbeddings(
-    model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
-    dimensions=int(os.getenv("OPENAI_EMBEDDING_DIMENSIONS", "1536")),
-)
+
+class AppEmbeddings:
+    """LangChain-compatible Embeddings adapter over api.core.embeddings, so RAGAS
+    scoring uses whatever EMBEDDING_PROVIDER the rest of the app is configured for
+    (openai or huggingface) instead of assuming OpenAI is available."""
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return get_embeddings(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return get_embedding(text)
+
+
+embeddings = AppEmbeddings()
 
 _gemini_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 if not _gemini_key:

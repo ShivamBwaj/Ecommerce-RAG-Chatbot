@@ -4,18 +4,22 @@ import os
 import sys
 import time
 
+from dotenv import load_dotenv
+
 # Shift Python path and working directory so that the relative prompt file paths in production code resolve properly.
 src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+load_dotenv(os.path.join(repo_root, ".env"))
 sys.path.insert(0, src_path)
 os.chdir(src_path)
 
 from langsmith import Client
 from langsmith.evaluation.evaluator import EvaluationResult
 
-from api.agents.graph import rag_agent_wrapper
+from api.agents.retrieval_generation import rag_pipeline
+from api.core.embeddings import get_embedding, get_embeddings
 
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import OpenAIEmbeddings
 from qdrant_client import QdrantClient
 from ragas.dataset_schema import SingleTurnSample
 from ragas.embeddings import LangchainEmbeddingsWrapper
@@ -35,10 +39,20 @@ RAG_PIPELINE_DELAY_SECONDS = float(os.getenv("RAG_PIPELINE_DELAY_SECONDS", "30")
 ls_client = Client()
 qdrant_client = QdrantClient(url=QDRANT_URL)
 
-embeddings = OpenAIEmbeddings(
-    model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
-    dimensions=int(os.getenv("OPENAI_EMBEDDING_DIMENSIONS", "1536")),
-)
+
+class AppEmbeddings:
+    """LangChain-compatible Embeddings adapter over api.core.embeddings, so RAGAS
+    scoring uses whatever EMBEDDING_PROVIDER the rest of the app is configured for
+    (openai or huggingface) instead of assuming OpenAI is available."""
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return get_embeddings(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return get_embedding(text)
+
+
+embeddings = AppEmbeddings()
 
 groq_api_keys = [
     os.getenv("GROQ_API_KEY"),
@@ -285,7 +299,7 @@ def run_rag_with_rate_limit_spacing(inputs: dict):
     """Sleep before each traced RAG call so upstream APIs see lower QPS."""
     if RAG_PIPELINE_DELAY_SECONDS > 0:
         time.sleep(RAG_PIPELINE_DELAY_SECONDS)
-    return rag_agent_wrapper(inputs["question"])
+    return rag_pipeline(inputs["question"], qdrant_client)
 
 
 def ragas_faithfulness(run, example):

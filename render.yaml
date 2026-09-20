@@ -1,0 +1,53 @@
+databases:
+  - name: handson-postgres
+    plan: free
+    databaseName: langgraph_db
+    user: langgraph_user
+
+services:
+  - type: web
+    name: handson-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: handson-postgres
+          property: connectionString
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION
+        sync: false
+      - key: EMBEDDING_PROVIDER
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: HF_API_TOKEN
+        sync: false
+      - key: LANGSMITH_TRACING
+        value: "true"
+      - key: LANGSMITH_ENDPOINT
+        value: https://api.smith.langchain.com
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_PROJECT
+        value: rag-tracing
+
+  - type: web
+    name: handson-streamlit
+    runtime: docker
+    plan: free
+    dockerfilePath: ./apps/chatbot-ui/Dockerfile
+    dockerContext: .
+    envVars:
+      # Render's private network resolves a web service by its `name` on the
+      # port its container listens on (matches apps/api/Dockerfile's EXPOSE 8000),
+      # same pattern as docker-compose's `http://api:8000`.
+      - key: API_URL
+        value: http://handson-api:8000

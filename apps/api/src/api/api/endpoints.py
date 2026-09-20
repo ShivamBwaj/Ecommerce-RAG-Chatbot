@@ -23,7 +23,7 @@ def rag(
     payload: RAGRequest
 ) -> StreamingResponse:
     return StreamingResponse(
-        rag_agent_stream_wrapper(payload.query, payload.thread_id),
+        rag_agent_stream_wrapper(payload.query, payload.thread_id, payload.user_id, payload.cart_id),
         media_type="text/event-stream"
     )
 

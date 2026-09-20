@@ -1,8 +1,8 @@
 from pydantic import BaseModel, Field, model_validator
-from langchain_core.messages import convert_to_openai_messages
+from langchain_core.messages import convert_to_openai_messages, AIMessage
 from langsmith import traceable,get_current_run_tree
 
-from typing import List
+from typing import List, Dict, Any
 
 from api.agents.utils.prompt_management import prompt_template_config
 from api.agents.utils.utils import format_ai_message
@@ -141,4 +141,173 @@ def intent_router_node(state):
         "references": [],
         "tool_calls": [],
         "final_answer": False,
+    }
+
+
+#### multi-agent coordinator system (product QA agent, shopping cart agent, coordinator)
+
+class AgentProperties(BaseModel):
+    iteration: int = 0
+    available_tools: List[Dict[str, Any]] = []
+    tool_calls: List[ToolCall] = []
+    final_answer: bool = False
+
+
+class Delegation(BaseModel):
+    agent: str
+    task: str
+
+
+class CoordinatorAgentProperties(BaseModel):
+    iteration: int = 0
+    available_tools: List[Dict[str, Any]] = []
+    plan: List[Delegation] = []
+    next_agent: str = ""
+
+
+class ProductQAAgentResponse(BaseModel):
+    answer: str=Field(..., description="The answer to the user's question")
+    references: List[RAGUsedContext]=Field(..., description="The list of retrieved contexts used to answer the question, each representing an inventory item")
+    final_answer: bool=False
+    tool_calls: List[ToolCall]=[]
+
+
+class ShoppingCartAgentResponse(BaseModel):
+    answer: str=Field(..., description="The answer to the user's question")
+    final_answer: bool=False
+    tool_calls: List[ToolCall]=[]
+
+
+class CoordinatorAgentResponse(BaseModel):
+    next_agent: str
+    plan: List[Delegation]
+    final_answer: bool=False
+    answer: str=""
+
+
+@traceable(name="product_qa_agent",run_type="llm",metadata={"ls_provider": LLM_PROVIDER, "ls_model_name": LLM_MODEL})
+def product_qa_agent(state)->dict:
+
+    template=prompt_template_config("api/agents/prompts/product_qa_agent.yaml", "product_qa_agent")
+    prompt=template.render(available_tools=state.product_qa_agent.available_tools)
+    messages=state.messages
+    conversation=[]
+    for message in messages:
+        conversation.append(convert_to_openai_messages(message))
+
+    client = create_llm_client()
+
+    response, raw_response = client.create_with_completion(
+        response_model=ProductQAAgentResponse,
+        messages=[{"role": "system", "content": prompt},*conversation],
+        model=LLM_MODEL,
+        temperature=0.5,
+    )
+
+    current_run=get_current_run_tree()
+    if current_run:
+        current_run.metadata["usage_metadata"] = {
+            "input_tokens": raw_response.usage.prompt_tokens,
+            "output_tokens": raw_response.usage.completion_tokens,
+            "total_tokens": raw_response.usage.total_tokens,
+        }
+
+    ai_message=format_ai_message(response)
+    return {
+        "messages": [ai_message],
+        "product_qa_agent": {
+            "tool_calls": response.tool_calls,
+            "iteration": state.product_qa_agent.iteration + 1,
+            "final_answer": response.final_answer,
+            "available_tools": state.product_qa_agent.available_tools,
+        },
+        "answer": response.answer,
+        "references": response.references,
+    }
+
+
+@traceable(name="shopping_cart_agent",run_type="llm",metadata={"ls_provider": LLM_PROVIDER, "ls_model_name": LLM_MODEL})
+def shopping_cart_agent(state)->dict:
+
+    template=prompt_template_config("api/agents/prompts/shopping_cart_agent.yaml", "shopping_cart_agent")
+    prompt=template.render(
+        available_tools=state.shopping_cart_agent.available_tools,
+        user_id=state.user_id,
+        cart_id=state.cart_id,
+    )
+    messages=state.messages
+    conversation=[]
+    for message in messages:
+        conversation.append(convert_to_openai_messages(message))
+
+    client = create_llm_client()
+
+    response, raw_response = client.create_with_completion(
+        response_model=ShoppingCartAgentResponse,
+        messages=[{"role": "system", "content": prompt},*conversation],
+        model=LLM_MODEL,
+        temperature=0.5,
+    )
+
+    current_run=get_current_run_tree()
+    if current_run:
+        current_run.metadata["usage_metadata"] = {
+            "input_tokens": raw_response.usage.prompt_tokens,
+            "output_tokens": raw_response.usage.completion_tokens,
+            "total_tokens": raw_response.usage.total_tokens,
+        }
+
+    ai_message=format_ai_message(response)
+    return {
+        "messages": [ai_message],
+        "shopping_cart_agent": {
+            "tool_calls": response.tool_calls,
+            "iteration": state.shopping_cart_agent.iteration + 1,
+            "final_answer": response.final_answer,
+            "available_tools": state.shopping_cart_agent.available_tools,
+        },
+        "answer": response.answer,
+    }
+
+
+@traceable(name="coordinator_agent", run_type="llm", metadata={"ls_provider": LLM_PROVIDER, "ls_model_name": LLM_MODEL})
+def coordinator_agent(state)->dict:
+    """Plans and delegates the user's query to the product QA and/or shopping cart worker agents."""
+
+    template=prompt_template_config("api/agents/prompts/coordinator_agent.yaml", "coordinator_agent")
+    prompt = template.render()
+
+    messages=state.messages
+    conversation=[]
+    for message in messages:
+        conversation.append(convert_to_openai_messages(message))
+
+    client = create_llm_client()
+
+    response, raw_response = client.create_with_completion(
+        response_model=CoordinatorAgentResponse,
+        messages=[{"role": "system", "content": prompt},*conversation],
+        model=LLM_MODEL,
+        temperature=0.5,
+    )
+
+    current_run=get_current_run_tree()
+    if current_run:
+        current_run.metadata["usage_metadata"] = {
+            "input_tokens": raw_response.usage.prompt_tokens,
+            "output_tokens": raw_response.usage.completion_tokens,
+            "total_tokens": raw_response.usage.total_tokens,
+        }
+
+    ai_message=[AIMessage(content=response.answer)] if response.final_answer else []
+
+    return {
+        "messages": ai_message,
+        "answer": response.answer,
+        "coordinator_agent": {
+            "plan": response.plan,
+            "next_agent": response.next_agent,
+            "iteration": state.coordinator_agent.iteration + 1,
+            "final_answer": response.final_answer,
+        },
     }

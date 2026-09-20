@@ -20,6 +20,19 @@ def get_session_id():
 
 session_id=get_session_id()
 
+def get_user_id():
+    if "user_id" not in st.session_state:
+        st.session_state.user_id = str(uuid.uuid4())
+    return st.session_state.user_id
+
+def get_cart_id():
+    if "cart_id" not in st.session_state:
+        st.session_state.cart_id = str(uuid.uuid4())
+    return st.session_state.cart_id
+
+user_id=get_user_id()
+cart_id=get_cart_id()
+
 def api_call(method, url, **kwargs):
 
     def _show_error_popup(message):
@@ -230,7 +243,7 @@ if prompt := st.chat_input("Hello! How can I assist you today?"):
         for line in api_call_stream(
             "post", 
             f"{config.API_URL}/rag/", 
-            json={"query":prompt,"thread_id":session_id},
+            json={"query":prompt,"thread_id":session_id,"user_id":user_id,"cart_id":cart_id},
             stream=True,
             headers={"Accept": "text/event-stream"}):
             line_text=line.decode("utf-8")

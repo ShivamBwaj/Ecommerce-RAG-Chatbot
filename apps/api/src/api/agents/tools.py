@@ -12,6 +12,9 @@ from qdrant_client.models import (
 
 from api.core.config import config
 from api.core.embeddings import get_embedding
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import numpy as np
 
 
 
@@ -117,7 +120,7 @@ def retrieve_reviews_data(query,item_list, top_k: int = 5) -> dict:
     query_embedding = get_embedding(query)
     qdrant_client = QdrantClient(url=config.QDRANT_URL)
     results=qdrant_client.query_points(
-            collection_name="amazon-items-collection-02-openai-small-reviews",
+            collection_name="amazon-items-collection-03-hf-reviews",
             prefetch=[
                 Prefetch(
                     query=query_embedding,
@@ -178,3 +181,152 @@ def get_formatted_reviews_context(query: str,item_list:list, top_k: int = 15) ->
     formatted_context = process_reviews_context(context)
 
     return formatted_context
+
+
+#### shopping cart tools
+
+def add_to_shopping_cart(items: list[dict], user_id: str, cart_id: str) -> str:
+    """Add a list of provided items to the shopping cart.
+
+    Args:
+        items: A list of items to add to the shopping cart. Each item is a dictionary with the following keys: product_id, quantity.
+        user_id: The id of the user to add the items to the shopping cart.
+        cart_id: The id of the shopping cart to add the items to.
+
+    Returns:
+        A list of the items added to the shopping cart.
+    """
+    conn = psycopg2.connect(config.POSTGRES_DSN)
+    conn.autocommit = True
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        for item in items:
+            product_id = item["product_id"]
+            quantity = item["quantity"]
+
+            qdrant_client = QdrantClient(url=config.QDRANT_URL, api_key=config.QDRANT_API_KEY)
+
+            dummy_vector = np.zeros(config.embedding_dimensions).tolist()
+            payload = qdrant_client.query_points(
+                collection_name=config.QDRANT_COLLECTION,
+                prefetch=[
+                    Prefetch(
+                        query=dummy_vector,
+                        filter=Filter(
+                            must=[
+                                FieldCondition(
+                                    key="parent_asin",
+                                    match=MatchValue(value=product_id)
+                                )
+                            ]
+                        ),
+                        using=config.qdrant_dense_vector_name,
+                        limit=20
+                    )
+                ],
+                query=FusionQuery(fusion="rrf"),
+                limit=1,
+            ).points[0].payload
+
+            product_image_url = payload.get("image")
+            price = payload.get("price")
+            currency = "USD"
+
+            # Check if item already exists
+            check_query = """
+                SELECT id, quantity, price
+                FROM shopping_carts.shopping_cart_items
+                WHERE user_id = %s AND shopping_cart_id = %s AND product_id = %s
+            """
+            cursor.execute(check_query, (user_id, cart_id, product_id))
+            existing_item = cursor.fetchone()
+
+            if existing_item:
+                new_quantity = existing_item["quantity"] + quantity
+
+                update_query = """
+                    UPDATE shopping_carts.shopping_cart_items
+                    SET
+                        quantity = %s,
+                        price = %s,
+                        currency = %s,
+                        product_image_url = COALESCE(%s, product_image_url)
+                    WHERE user_id = %s AND shopping_cart_id = %s AND product_id = %s
+                """
+                cursor.execute(update_query, (new_quantity, price, currency, product_image_url, user_id, cart_id, product_id))
+            else:
+                insert_query = """
+                    INSERT INTO shopping_carts.shopping_cart_items (
+                        user_id, shopping_cart_id, product_id,
+                        price, quantity, currency, product_image_url
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """
+                cursor.execute(insert_query, (user_id, cart_id, product_id, price, quantity, currency, product_image_url))
+
+    conn.close()
+    return f"Added {items} to the shopping cart."
+
+
+def get_shopping_cart(user_id: str, cart_id: str) -> str:
+    """Retrieve all items in a user's shopping cart.
+
+    Args:
+        user_id: User ID
+        cart_id: Cart identifier
+
+    Returns:
+        A string listing the cart's items with quantity and price, or a message that the cart is empty.
+    """
+    conn = psycopg2.connect(config.POSTGRES_DSN)
+    conn.autocommit = True
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        query = """
+            SELECT
+                product_id, price, quantity,
+                currency, product_image_url,
+                (price * quantity) as total_price
+            FROM shopping_carts.shopping_cart_items
+            WHERE user_id = %s AND shopping_cart_id = %s
+            ORDER BY added_at DESC
+        """
+        cursor.execute(query, (user_id, cart_id))
+        items = [dict(row) for row in cursor.fetchall()]
+
+    conn.close()
+
+    if not items:
+        return "The shopping cart is empty."
+
+    lines = [
+        f"- product_id: {item['product_id']}, quantity: {item['quantity']}, "
+        f"price: {item['price']} {item['currency']}, total: {item['total_price']} {item['currency']}"
+        for item in items
+    ]
+    return "\n".join(lines)
+
+
+def remove_from_cart(product_id: str, user_id: str, cart_id: str) -> str:
+    """Remove an item completely from the shopping cart.
+
+    Args:
+        user_id: User ID
+        product_id: Product ID to remove
+        cart_id: Cart identifier
+
+    Returns:
+        A message confirming whether the item was removed.
+    """
+    conn = psycopg2.connect(config.POSTGRES_DSN)
+    conn.autocommit = True
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        query = """
+            DELETE FROM shopping_carts.shopping_cart_items
+            WHERE user_id = %s AND shopping_cart_id = %s AND product_id = %s
+        """
+        cursor.execute(query, (user_id, cart_id, product_id))
+        removed = cursor.rowcount > 0
+
+    conn.close()
+    return f"Removed product {product_id} from the cart." if removed else f"Product {product_id} was not in the cart."

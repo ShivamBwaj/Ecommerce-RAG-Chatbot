@@ -2,7 +2,7 @@ from qdrant_client import QdrantClient
 from langsmith import traceable,get_current_run_tree
 from pydantic import BaseModel, Field
 
-from api.agents.tools import get_item_payload_by_parent_asin, retrieve_data
+from api.agents.tools import get_item_payload_by_parent_asin, retrieve_items_data
 from api.agents.utils.prompt_management import prompt_template_config
 from api.core.llm import LLM_MODEL, LLM_PROVIDER, create_llm_client
 from api.core.config import config
@@ -81,7 +81,7 @@ def generate_answer(prompt):
 def rag_pipeline(query,qdrant_client,top_k=5):
     
 
-    retrieved_context=retrieve_data(query,qdrant_client, top_k)
+    retrieved_context=retrieve_items_data(query, top_k)
     preprocessed_context=process_context(retrieved_context)
     prompt=build_prompt(preprocessed_context, query)
     answer=generate_answer(prompt)

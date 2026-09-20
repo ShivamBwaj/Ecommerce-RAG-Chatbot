@@ -15,8 +15,10 @@ class Config(BaseSettings):
     OPENAI_MODEL: str = "gpt-5.4"
     GROQ_MODEL: str = "qwen/qwen3-32b"
     QDRANT_URL: str = "http://qdrant:6333"
+    QDRANT_API_KEY: str | None = None
     QDRANT_COLLECTION: str = "amazon-items-collection-02-openai-small"
     QDRANT_SPARSE_VECTOR_NAME: str = "bm25"
+    POSTGRES_DSN: str = "postgresql://langgraph_user:langgraph_password@postgres:5432/langgraph_db"
 
     # Ignore extra keys from .env (e.g. LANGSMITH_*, HUGGINGFACEHUB_API_TOKEN) so shared env files do not fail validation.
     model_config = SettingsConfigDict(

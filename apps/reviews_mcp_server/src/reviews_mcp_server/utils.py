@@ -20,7 +20,7 @@ def retrieve_reviews_data(query,item_list, top_k: int = 5) -> dict:
     query_embedding = get_embedding(query)
     qdrant_client = QdrantClient(url="http://qdrant:6333")
     results=qdrant_client.query_points(
-            collection_name="amazon-items-collection-02-openai-small-reviews",
+            collection_name="amazon-items-collection-03-hf-reviews",
             prefetch=[
                 Prefetch(
                     query=query_embedding,

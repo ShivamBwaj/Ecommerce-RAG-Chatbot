@@ -4,10 +4,25 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 from operator import add
-from api.agents.tools import get_formatted_items_context,get_item_payload_by_parent_asin,get_formatted_reviews_context
+from api.agents.tools import (
+    get_formatted_items_context,
+    get_item_payload_by_parent_asin,
+    get_formatted_reviews_context,
+    add_to_shopping_cart,
+    get_shopping_cart,
+    remove_from_cart,
+)
 from api.agents.utils.utils import get_tool_descriptions
 from typing import List, Dict, Any, Annotated
-from api.agents.agents import ToolCall, RAGUsedContext , agent_node, intent_router_node
+from api.agents.agents import (
+    ToolCall,
+    RAGUsedContext,
+    AgentProperties,
+    CoordinatorAgentProperties,
+    product_qa_agent,
+    shopping_cart_agent,
+    coordinator_agent,
+)
 from langgraph.checkpoint.postgres import PostgresSaver
 from api.core.config import config as app_config
 import json
@@ -15,86 +30,117 @@ import json
 
 class State(BaseModel):
     messages: Annotated[List[Any], add] = []
-    question_relevant: bool = False
-    iteration: int = 0
     answer: str = ""
-    available_tools: List[Dict[str, Any]] = []
-    tool_calls: List[ToolCall] = []
-    final_answer: bool = False
-    references: List[RAGUsedContext] = []
+    references: Annotated[List[RAGUsedContext], add] = []
     trace_id: str = ""
+    user_id: str = ""
+    cart_id: str = ""
+    product_qa_agent: AgentProperties = Field(default_factory=AgentProperties)
+    shopping_cart_agent: AgentProperties = Field(default_factory=AgentProperties)
+    coordinator_agent: CoordinatorAgentProperties = Field(default_factory=CoordinatorAgentProperties)
+
 
 #### Edges
 
-def tool_router(state:State)->str:
-    "Decide weatehr to continue or end"
-    # Pending tool calls win over final_answer: ending here would drop the call
-    # and surface the model's pre-retrieval preamble as the final answer.
-    if len(state.tool_calls)>0 and state.iteration <= 2:
+def product_qa_agent_tool_router(state: State) -> str:
+    if state.product_qa_agent.final_answer:
+        return "end"
+    elif state.product_qa_agent.iteration > 4:
+        return "end"
+    elif len(state.product_qa_agent.tool_calls) > 0:
         return "tools"
-    return "end"
-    
-
-def intent_router_conditional_edges(state: State):
-    if state.question_relevant:
-        return "agent_node"
     else:
         return "end"
+
+
+def shopping_cart_agent_tool_router(state: State) -> str:
+    if state.shopping_cart_agent.final_answer:
+        return "end"
+    elif state.shopping_cart_agent.iteration > 2:
+        return "end"
+    elif len(state.shopping_cart_agent.tool_calls) > 0:
+        return "tools"
+    else:
+        return "end"
+
+
+def coordinator_agent_edge(state: State) -> str:
+    if state.coordinator_agent.iteration > 3:
+        return "end"
+    elif state.coordinator_agent.next_agent == "product_qa_agent":
+        return "product_qa_agent"
+    elif state.coordinator_agent.next_agent == "shopping_cart_agent":
+        return "shopping_cart_agent"
+    else:
+        return "end"
+
 
 #### workflow
 workflow = StateGraph(State)
 
-tools=[get_formatted_items_context,get_formatted_reviews_context]
+product_qa_agent_tools = [get_formatted_items_context, get_formatted_reviews_context]
+shopping_cart_agent_tools = [add_to_shopping_cart, get_shopping_cart, remove_from_cart]
 
 
 def handle_tool_error(error: Exception) -> str:
-    """Return a ToolMessage when a retrieval tool fails.
+    """Return a ToolMessage when a retrieval/cart tool fails.
 
     This lets the graph continue with a valid response for the tool call instead
     of leaving an unanswered tool call in the persisted conversation state.
     """
     return (
-        "The retrieval tool could not complete this request. "
+        "The tool could not complete this request. "
         f"Error: {error!s}. Please answer using the available results, "
-        "or explain that no review information is currently available."
+        "or explain that the action could not be completed."
     )
 
 
-tool_node=ToolNode(tools, handle_tool_errors=handle_tool_error)
-tool_descriptions=get_tool_descriptions(tools)
+product_qa_agent_tool_node = ToolNode(product_qa_agent_tools, handle_tool_errors=handle_tool_error)
+shopping_cart_agent_tool_node = ToolNode(shopping_cart_agent_tools, handle_tool_errors=handle_tool_error)
+product_qa_agent_tool_descriptions = get_tool_descriptions(product_qa_agent_tools)
+shopping_cart_agent_tool_descriptions = get_tool_descriptions(shopping_cart_agent_tools)
 
-workflow.add_node("agent_node",agent_node)
-workflow.add_node("tool_node",tool_node)
-workflow.add_node("intent_router_node", intent_router_node)
-workflow.add_edge(START,"intent_router_node")
+workflow.add_node("coordinator_agent", coordinator_agent)
+workflow.add_node("product_qa_agent", product_qa_agent)
+workflow.add_node("shopping_cart_agent", shopping_cart_agent)
+workflow.add_node("product_qa_agent_tool_node", product_qa_agent_tool_node)
+workflow.add_node("shopping_cart_agent_tool_node", shopping_cart_agent_tool_node)
 
+workflow.add_edge(START, "coordinator_agent")
 
 workflow.add_conditional_edges(
-    "intent_router_node",
-    intent_router_conditional_edges,
+    "coordinator_agent",
+    coordinator_agent_edge,
     {
-        "agent_node": "agent_node",
-        "end": END
-    }
+        "product_qa_agent": "product_qa_agent",
+        "shopping_cart_agent": "shopping_cart_agent",
+        "end": END,
+    },
 )
 workflow.add_conditional_edges(
-    "agent_node",
-    tool_router,
+    "product_qa_agent",
+    product_qa_agent_tool_router,
     {
-        "tools": "tool_node",
-        "end": END
-    }
+        "tools": "product_qa_agent_tool_node",
+        "end": "coordinator_agent",
+    },
+)
+workflow.add_conditional_edges(
+    "shopping_cart_agent",
+    shopping_cart_agent_tool_router,
+    {
+        "tools": "shopping_cart_agent_tool_node",
+        "end": "coordinator_agent",
+    },
 )
 
+workflow.add_edge("product_qa_agent_tool_node", "product_qa_agent")
+workflow.add_edge("shopping_cart_agent_tool_node", "shopping_cart_agent")
 
-workflow.add_edge("tool_node","agent_node")
 
+def rag_agent_stream_wrapper(question: str, thread_id: str, user_id: str = "", cart_id: str = ""):
 
-
-def rag_agent_stream_wrapper(question:str,thread_id:str):
-    
-
-    def _string_for_sse(message:str):       ##server sent events
+    def _string_for_sse(message: str):  ##server sent events
         return f"data: {message}\n\n"
 
     def _process_graph_event(chunk):
@@ -102,72 +148,94 @@ def rag_agent_stream_wrapper(question:str,thread_id:str):
         def _is_node_start(chunk):
             return chunk[1].get("type") == "task"
 
-        def _is_node_end(chunk):
-            return chunk[0] == "updates"
-
         def _tool_to_text(tool_call):
             if tool_call.name == "get_formatted_items_context":
                 return f"Looking for items: {tool_call.arguments.get('query', '')}."
             elif tool_call.name == "get_formatted_reviews_context":
-                return f"Fetching user reviews..."
+                return "Fetching user reviews..."
+            elif tool_call.name == "add_to_shopping_cart":
+                return "Adding items to your cart..."
+            elif tool_call.name == "get_shopping_cart":
+                return "Checking your cart..."
+            elif tool_call.name == "remove_from_cart":
+                return "Removing item from your cart..."
             else:
                 return f"Unknown tool: {tool_call.name}."
 
         if _is_node_start(chunk):
-            if chunk[1].get("payload", {}).get("name") == "intent_router_node":
-                return "Analysing the question..."
-            if chunk[1].get("payload", {}).get("name") == "agent_node":
+            node_name = chunk[1].get("payload", {}).get("name")
+            if node_name == "coordinator_agent":
                 return "Planning..."
-            if chunk[1].get("payload", {}).get("name") == "tool_node":
-                message = " ".join([_tool_to_text(tool_call) for tool_call in chunk[1].get('payload', {}).get('input', {}).tool_calls])
-                return message
-        else:
-            return False
+            if node_name == "product_qa_agent":
+                return "Looking into the products..."
+            if node_name == "shopping_cart_agent":
+                return "Managing your cart..."
+            if node_name == "product_qa_agent_tool_node":
+                agent_state = chunk[1].get("payload", {}).get("input", {}).product_qa_agent
+                return " ".join(_tool_to_text(tc) for tc in agent_state.tool_calls)
+            if node_name == "shopping_cart_agent_tool_node":
+                agent_state = chunk[1].get("payload", {}).get("input", {}).shopping_cart_agent
+                return " ".join(_tool_to_text(tc) for tc in agent_state.tool_calls)
+        return False
 
-    qdrant_client = QdrantClient(url=app_config.QDRANT_URL)
-    initial_state={
-            "messages":[{"role":"user","content":question}],
-            "iteration":0,
-            "available_tools":tool_descriptions
+    qdrant_client = QdrantClient(url=app_config.QDRANT_URL, api_key=app_config.QDRANT_API_KEY)
+    initial_state = {
+        "messages": [{"role": "user", "content": question}],
+        "user_id": user_id,
+        "cart_id": cart_id,
+        "product_qa_agent": {
+            "iteration": 0,
+            "final_answer": False,
+            "available_tools": product_qa_agent_tool_descriptions,
+            "tool_calls": [],
+        },
+        "shopping_cart_agent": {
+            "iteration": 0,
+            "final_answer": False,
+            "available_tools": shopping_cart_agent_tool_descriptions,
+            "tool_calls": [],
+        },
     }
-    conffig={
-            "configurable":{    
-                "thread_id":thread_id
-            }
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+        }
     }
-    with PostgresSaver.from_conn_string("postgresql://langgraph_user:langgraph_password@postgres:5432/langgraph_db") as checkpointer:
-            graph=workflow.compile(checkpointer=checkpointer)
-            for chunk in graph.stream(initial_state,
-                                        config=conffig,
-                                        stream_mode=["updates","debug","values"]):
-                processed_chunk=_process_graph_event(chunk)
+    with PostgresSaver.from_conn_string(app_config.POSTGRES_DSN) as checkpointer:
+        graph = workflow.compile(checkpointer=checkpointer)
+        for chunk in graph.stream(
+            initial_state,
+            config=config,
+            stream_mode=["updates", "debug", "values"],
+        ):
+            processed_chunk = _process_graph_event(chunk)
 
-                if processed_chunk:
-                    yield _string_for_sse(processed_chunk)
-                if chunk[0]=="values":
-                    result=chunk[1]
+            if processed_chunk:
+                yield _string_for_sse(processed_chunk)
+            if chunk[0] == "values":
+                result = chunk[1]
 
-    used_context=[]
-    for item in result.get("references",[]):
-        payload=get_item_payload_by_parent_asin(qdrant_client, item.id)
+    used_context = []
+    for item in result.get("references", []):
+        payload = get_item_payload_by_parent_asin(qdrant_client, item.id)
         if not payload:
             continue
-        image_url=payload.get("image")
-        price=payload.get("price")
+        image_url = payload.get("image")
+        price = payload.get("price")
         if image_url:
             used_context.append({
                 "image_url": image_url,
                 "price": price,
-                "description": item.description
+                "description": item.description,
             })
 
     yield _string_for_sse(json.dumps(
         {
             "type": "final_result",
-            "data":{
+            "data": {
                 "answer": result.get("answer", ""),
                 "used_context": used_context,
-                "trace_id": result.get("trace_id", "")
-            }
+                "trace_id": result.get("trace_id", ""),
+            },
         }
     ))

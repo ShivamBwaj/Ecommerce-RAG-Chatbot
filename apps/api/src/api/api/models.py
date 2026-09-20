@@ -17,6 +17,8 @@ class FeedbackResponse(BaseModel):
 class RAGRequest(BaseModel):
     query: str=Field(..., description="The user's query for retrieval-augmented generation.")
     thread_id: str=Field(..., description="The thread ID")
+    user_id: str=Field("", description="The user ID, used by the shopping cart agent")
+    cart_id: str=Field("", description="The shopping cart ID, used by the shopping cart agent")
 
 class RAGUsedContext(BaseModel):
     image_url: str=Field(..., description="The URL of the image used to answer the question")

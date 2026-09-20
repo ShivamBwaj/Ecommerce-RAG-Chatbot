@@ -1,3 +1,10 @@
+# Deployed via `render services create` (CLI) rather than the dashboard Blueprint
+# flow, because the CLI's service-create command has no dockerfilePath/dockerContext
+# flags (those are Blueprint-only), and this repo's Dockerfiles need a build context
+# at the repo root while living in apps/*/Dockerfile. Native Python runtime + uv
+# sidesteps that gap entirely. This file documents the equivalent Blueprint shape;
+# the live services' actual config is the source of truth (see Render dashboard).
+
 databases:
   - name: handson-postgres
     plan: free
@@ -7,10 +14,11 @@ databases:
 services:
   - type: web
     name: handson-api
-    runtime: docker
+    runtime: python
     plan: free
-    dockerfilePath: ./apps/api/Dockerfile
-    dockerContext: .
+    rootDir: .
+    buildCommand: "pip install uv && uv sync --frozen --no-dev --package api"
+    startCommand: "cd apps/api/src && uv run uvicorn api.app:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: POSTGRES_DSN
         fromDatabase:
@@ -41,13 +49,11 @@ services:
 
   - type: web
     name: handson-streamlit
-    runtime: docker
+    runtime: python
     plan: free
-    dockerfilePath: ./apps/chatbot-ui/Dockerfile
-    dockerContext: .
+    rootDir: .
+    buildCommand: "pip install uv && uv sync --frozen --no-dev --package chatbot-ui"
+    startCommand: "cd apps/chatbot-ui/src && uv run streamlit run chatbot_ui/app.py --server.port $PORT --server.address 0.0.0.0"
     envVars:
-      # Render's private network resolves a web service by its `name` on the
-      # port its container listens on (matches apps/api/Dockerfile's EXPOSE 8000),
-      # same pattern as docker-compose's `http://api:8000`.
       - key: API_URL
-        value: http://handson-api:8000
+        value: https://handson-api.onrender.com

@@ -1,6 +1,6 @@
-# 🛒 Ecommerce RAG Chatbot
+# 🛒 Multi-Agent Ecommerce Shopping Assistant
 
-> A multi-agent Retrieval-Augmented Generation (RAG) shopping assistant — product Q&A and a persistent shopping cart, built with FastAPI, LangGraph, Streamlit, and Qdrant.
+> A multi-agent system (LangGraph coordinator delegating to specialist agents) with RAG as one of its capabilities — product Q&A and a persistent shopping cart, built with FastAPI, LangGraph, Streamlit, and Qdrant.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135+-00a393.svg)](https://fastapi.tiangolo.com/)

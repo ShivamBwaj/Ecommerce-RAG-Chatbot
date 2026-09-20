@@ -52,7 +52,7 @@ class State(BaseModel):
 def product_qa_agent_tool_router(state: State) -> str:
     if state.product_qa_agent.final_answer:
         return "end"
-    elif state.product_qa_agent.iteration > 4:
+    elif state.product_qa_agent.iteration > 6:
         return "end"
     elif len(state.product_qa_agent.tool_calls) > 0:
         return "tools"
@@ -72,7 +72,7 @@ def shopping_cart_agent_tool_router(state: State) -> str:
 
 
 def coordinator_agent_edge(state: State) -> str:
-    if state.coordinator_agent.iteration > 3:
+    if state.coordinator_agent.iteration > 5:
         return "end"
     elif state.coordinator_agent.next_agent == "product_qa_agent":
         return "product_qa_agent"

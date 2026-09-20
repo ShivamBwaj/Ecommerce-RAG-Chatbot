@@ -350,7 +350,10 @@ def ragas_response_relevancy(run, example):
             response=o["answer"],
             retrieved_contexts=o.get("retrieved_context", o.get("used_context", [])),
         )
-        scorer = ResponseRelevancy(llm=ragas_llm, embeddings=ragas_embeddings)
+        # strictness (default 3) samples multiple candidate generations per
+        # call, which Gemini rejects ("Multiple candidates is not enabled for
+        # this model") regardless of the LLM wrapper's own n=1.
+        scorer = ResponseRelevancy(llm=ragas_llm, embeddings=ragas_embeddings, strictness=1)
         return await scorer.single_turn_ascore(sample)
 
     return _eval_score("ragas_response_relevancy", asyncio.run(_score()))

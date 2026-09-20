@@ -1,575 +1,218 @@
 # 🛒 Ecommerce RAG Chatbot
 
-> A production-ready Retrieval-Augmented Generation (RAG) chatbot for ecommerce product recommendations, built with FastAPI, Streamlit, and Qdrant vector database.
+> A multi-agent Retrieval-Augmented Generation (RAG) shopping assistant — product Q&A and a persistent shopping cart, built with FastAPI, LangGraph, Streamlit, and Qdrant.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135+-00a393.svg)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-multi--agent-1c3c3c.svg)](https://www.langchain.com/langgraph)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.55+-ff4b4b.svg)](https://streamlit.io/)
 [![Groq](https://img.shields.io/badge/Groq-LLM-green.svg)](https://groq.com/)
-[![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-4f8bc8.svg)](https://qdrant.tech/)
+[![Qdrant](https://img.shields.io/badge/Qdrant-Cloud-4f8bc8.svg)](https://qdrant.tech/)
+[![Render](https://img.shields.io/badge/Deployed-Render-46e3b7.svg)](https://render.com/)
+
+**Live demo:** [Streamlit UI](https://handson-streamlit.onrender.com) · [API](https://handson-api.onrender.com) — free tier, spins down on idle so the first request may take 30-50s to wake up.
 
 ## 📋 Overview
 
-This project implements a sophisticated **Retrieval-Augmented Generation (RAG)** chatbot specifically designed for ecommerce product discovery and recommendations. The chatbot can answer natural language questions about products in the catalog, provide detailed product information, and suggest relevant items with images and pricing.
+A shopping assistant for a music/CDs/vinyl catalog. It answers product questions (specs, reviews, recommendations) and manages a real, persisted shopping cart (add/remove/view items) — routed through a coordinator agent that delegates to whichever specialist the query needs, and can chain both in a single turn ("find me a Queen vinyl and add it to my cart").
 
 ### ✨ Key Features
 
-- **🔍 Hybrid Search**: Combines semantic (vector) search with BM25 keyword search using Reciprocal Rank Fusion (RRF)
-- **🧠 LLM-Powered Responses**: Uses OpenAI by default when `OPENAI_API_KEY` is set, with Groq kept as a fallback
-- **📊 Structured Output**: Returns responses with explicit product references, descriptions, and metadata
-- **🎯 RAG Evaluation**: Comprehensive evaluation framework using RAGAS metrics (Faithfulness, Relevance, Context Precision/Recall)
-- **🐳 Docker Support**: Complete containerized deployment with docker-compose
-- **🌐 Modern UI**: Streamlit-based chat interface with product suggestion sidebar
-- **🔧 Multi-LLM Support**: Backend supports both Groq and Gemini providers (extensible)
+- **🧑‍🤝‍🧑 Multi-agent coordinator**: a `coordinator_agent` plans and delegates to a `product_qa_agent` (catalog search, reviews) and a `shopping_cart_agent` (add/remove/view cart), each with their own tools and iteration budget
+- **🛒 Persistent cart**: cart state lives in Postgres (`shopping_carts.shopping_cart_items`), survives restarts, scoped per `user_id`/`cart_id`
+- **💬 Multi-turn memory**: conversation + agent state checkpointed per `thread_id` via LangGraph's `PostgresSaver`
+- **🔍 Hybrid Search**: dense (vector) + BM25 sparse search fused with Reciprocal Rank Fusion (RRF) in Qdrant
+- **📡 Streaming UX**: SSE stream shows live progress ("Planning...", "Looking for items: ...") before the final answer
+- **📊 RAG Evaluation**: RAGAS-based benchmark (Faithfulness, Response Relevancy, Context Precision/Recall) tracked in LangSmith
+- **🐳 Docker Support**: full local stack via `docker-compose` (api, streamlit, Qdrant, Postgres, MCP servers)
+- **☁️ Cloud-deployed**: API + Streamlit on Render, vectors on Qdrant Cloud, LLM on Groq — entirely on free tiers
+- **🔧 Provider-agnostic**: `EMBEDDING_PROVIDER` and LLM provider both switch between OpenAI and a fully free Groq + HuggingFace stack via config, no code changes
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Streamlit     │────▶│   FastAPI        │────▶│   Qdrant        │
-│   Frontend      │     │   Backend        │     │   Vector DB    │
-│   (Port 8501)   │◀────│   (Port 8000)    │◀────│   (Port 6333)  │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-                                │
-                                ▼
-                       ┌──────────────────┐
-                       │ OpenAI / Groq /  │
-                       │   Gemini LLM API │
-                       │   LLM API        │
-                       └──────────────────┘
+┌─────────────────┐     ┌──────────────────────────────────────────┐
+│   Streamlit     │────▶│   FastAPI (LangGraph multi-agent)         │
+│   Frontend      │     │                                            │
+│  (Render)       │◀────│   coordinator_agent                       │
+└─────────────────┘     │      ├─▶ product_qa_agent ─▶ Qdrant tools  │
+                         │      └─▶ shopping_cart_agent ─▶ Postgres  │
+                         │   (Render)                                │
+                         └───────────────┬────────────────────────────┘
+                                          │
+                        ┌─────────────────┼─────────────────┐
+                        ▼                 ▼                 ▼
+                 ┌─────────────┐  ┌──────────────┐  ┌───────────────┐
+                 │ Qdrant Cloud│  │  Postgres     │  │ Groq / HF     │
+                 │ (vectors)   │  │ (Render, cart │  │ (LLM + embed) │
+                 │             │  │ + checkpoints)│  │               │
+                 └─────────────┘  └──────────────┘  └───────────────┘
 ```
 
-### Data Flow
+### Request flow
 
-1. User submits query via Streamlit UI
-2. FastAPI endpoint receives request
-3. **Retrieval Phase**:
-   - Query embedding via OpenAI `text-embedding-3-small`
-   - Hybrid search: Semantic (vector) + BM25 keyword search with RRF fusion
-   - Top-k most relevant product chunks retrieved from Qdrant
-4. **Generation Phase**:
-   - Context formatted with product IDs, ratings, and descriptions
-   - Prompt engineered to produce detailed, structured answers
-   - LLM generates response with referenced product IDs
-5. **Response**:
-   - Answer text with detailed product specifications
-   - List of used products with images and prices (extracted from Qdrant)
-   - Streamlit displays answer and product cards in sidebar
+1. User sends a message from Streamlit (with `thread_id`, `user_id`, `cart_id`)
+2. `coordinator_agent` reads the conversation, decides whether this needs `product_qa_agent`, `shopping_cart_agent`, both, or neither
+3. Each worker agent calls its own tools (`get_formatted_items_context` / `get_formatted_reviews_context` for product QA; `add_to_shopping_cart` / `get_shopping_cart` / `remove_from_cart` for the cart) and loops back to the coordinator with results
+4. Coordinator repeats until it has enough information, then sets `final_answer=True`
+5. Response streams back over SSE; the API resolves product IDs to images/prices from Qdrant for the UI's product cards
 
-## 🚀 Quick Start
+## 🚀 Quick Start (local)
 
 ### Prerequisites
 
-- **Python 3.12+** (recommended: use [uv](https://docs.astral.sh/uv/) for dependency management)
-- **Docker Desktop** (optional, for containerized deployment)
-- **API Keys**:
-    - `OPENAI_API_KEY` (required for the default LLM path) - from [OpenAI](https://platform.openai.com/)
-    - `GROQ_API_KEY` (optional fallback)
-    - `GEMINI_API_KEY` or `GOOGLE_API_KEY` (optional, for evaluation)
+- **Python 3.12+**, [uv](https://docs.astral.sh/uv/) for dependency management
+- **Docker Desktop** (for the full local stack)
+- API keys: `GROQ_API_KEY` (LLM), `HF_API_TOKEN` (embeddings) — both free tier. `OPENAI_API_KEY` optional if you prefer OpenAI for both.
 
-### 1. Clone and Setup
+### 1. Configure environment
 
-```bash
-# Clone the repository
-cd "C:\Users\Loq\Documents\CRAP\end to end aibootcamp\code\handsON"
-
-# Install dependencies (using uv)
-uv sync
-```
-
-### 2. Configure Environment
-
-Create a `.env` file in the project root:
+Copy `.env.example` to `.env` and fill in your keys. The free stack (default) needs:
 
 ```env
-# Required: OpenAI API key for production chatbot
-OPENAI_API_KEY=your_openai_api_key_here
-
-# Optional fallback
-GROQ_API_KEY=your_groq_api_key_here
-
-# Optional: For evaluation (RAGAS uses Gemini)
-GEMINI_API_KEY=your_gemini_api_key_here
-# OR
-GOOGLE_API_KEY=your_google_api_key_here
-
-# Optional: Hugging Face token if you switch EMBEDDING_PROVIDER back to huggingface
-HF_API_TOKEN=your_hf_token_here
-
-# Embeddings
-EMBEDDING_PROVIDER=openai
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-OPENAI_EMBEDDING_DIMENSIONS=1536
+GROQ_API_KEY=your_groq_key
+EMBEDDING_PROVIDER=huggingface
+HF_API_TOKEN=your_hf_token
 HF_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-HF_DENSE_VECTOR_NAME=all-MiniLM-L6-v2
-
-# Qdrant connection (use localhost for local, 'qdrant' for docker)
-QDRANT_URL=http://localhost:6333
-QDRANT_COLLECTION=amazon-items-collection-02-openai-small
-QDRANT_SPARSE_VECTOR_NAME=bm25
-
-# API endpoint for Streamlit UI
-API_URL=http://localhost:8000
+QDRANT_URL=http://qdrant:6333
+QDRANT_COLLECTION=amazon-items-collection-01-hybrid-search
 ```
 
-### 3. Start Qdrant Vector Database
+Add more `GROQ_API_KEY2`..`GROQ_API_KEY7` for round-robin rotation if you're hitting rate limits (`api/core/llm.py` picks a different key per LLM call).
 
-**Option A: Docker (Recommended)**
-
-```bash
-docker run -p 6333:6333 -p 6334:6334 \
-  -v $(pwd)/qdrant_storage:/qdrant/storage \
-  qdrant/qdrant
-```
-
-**Option B: Local binary** - Download from [qdrant.tech](https://qdrant.tech/documentation/quick-start/)
-
-### 4. Load Product Data into Qdrant
-
-```bash
-# Activate virtual environment if using uv
-uv sync
-
-PYTHONPATH=apps/api/src QDRANT_URL=http://localhost:6333 \
-  python apps/api/scripts/reindex_openai_embeddings.py --recreate
-```
-
-### 5. Run the Application
-
-**Option A: Docker Compose (All-in-One)**
+### 2. Run everything
 
 ```bash
 docker compose up --build
 ```
 
-Services:
-- 🖥️ **UI**: http://localhost:8501
-- 🔌 **API**: http://localhost:8000
-- 💾 **Qdrant**: http://localhost:6333
+This starts `qdrant`, `postgres` (auto-runs `scripts/sql/shopping_cart_table.sql` on first init), `api`, `streamlit-app`, and the two MCP servers.
 
-**Option B: Local Development**
+- 🖥️ UI: http://localhost:8501
+- 🔌 API: http://localhost:8000
+- 💾 Qdrant: http://localhost:6333
 
-Terminal 1 - Start API:
-```bash
-uv run --package api uvicorn api.app:app --host 0.0.0.0 --port 8000 --reload
-```
+The API self-provisions its LangGraph checkpoint tables on startup — no manual migration needed for a fresh Postgres.
 
-Terminal 2 - Start UI:
-```bash
-uv run --package chatbot-ui streamlit run apps/chatbot-ui/src/chatbot_ui/app.py
-```
+### 3. Load product data
 
-Open http://localhost:8501 in your browser.
+If starting from scratch, `apps/api/scripts/reindex_openai_embeddings.py` re-embeds and indexes the catalog. To copy an existing Qdrant instance to a fresh one (e.g., migrating to Qdrant Cloud), use `apps/api/scripts/migrate_to_qdrant_cloud.py` instead — it copies vectors directly rather than re-embedding.
+
+## ☁️ Deployment (Render + Qdrant Cloud)
+
+The live deployment uses:
+- **Render** — `api` and `streamlit-app` as native Python web services (not Docker: Render's CLI has no way to point at a Dockerfile in a subdirectory with a repo-root build context, so these run via `uv sync` + `uv run uvicorn`/`streamlit run` directly), plus a managed Postgres
+- **Qdrant Cloud** — free 1GB cluster; `apps/api/scripts/migrate_to_qdrant_cloud.py` handles the one-time migration from local
+- `render.yaml` documents the equivalent Blueprint shape, though the live services were provisioned via `render services create` (see file header for why)
+
+**Known free-tier constraints:**
+- Render web services sleep after inactivity (cold start ~30-50s)
+- Render free Postgres **expires 30 days after creation** and needs manual renewal in the dashboard
+- Groq free tier caps output at ~1000 tokens/minute *per key* — a single detailed response can exceed that on one key alone, which is why the app rotates across multiple keys and caps `max_tokens`
 
 ## 📊 Evaluation Results
 
-The system has been evaluated on **28 test samples** using the **RAGAS** framework (Retrieval-Augmented Generation Assessment). Here are the metrics:
+Benchmarked with **RAGAS** against a 28-question golden dataset, tracked in LangSmith. Two rounds, since the first attempt at improving retrieval precision targeted the wrong layer (see below):
 
-| Metric | Score | Interpretation |
-|--------|-------|----------------|
-| **Faithfulness** (ragas_faithfulness) | **0.881** | High - answers are grounded in retrieved context |
-| **Response Relevancy** (ragas_response_relevancy) | **0.841** | High - answers are relevant to user queries |
-| **Context Recall** (ragas_context_recall_id_based) | **0.957** | Very High - system retrieves most relevant items |
-| **Context Precision** (ragas_context_precision_id_based) | **0.217** | Moderate - precision could be improved |
-| **Median Latency** | **31.52s** | Includes 45s rate-limit delay for Groq API |
-| **Total Cost** | **$0.00** | Evaluations run on Groq (free tier) + Gemini for scoring |
+| Metric | Baseline (`top_k=5`) | Tuned (`top_k=3` + token cap) |
+|---|---|---|
+| **Context Precision** | 0.236 | **0.349 (+48%)** |
+| Context Recall | 1.000 | 0.905 |
+| Faithfulness | 0.688 | 0.727 |
+| Response Relevancy | 0.876 | 0.738* |
 
-### 📈 Understanding the Metrics
+\* Recovering this is an active area — see `apps/api/evals/eval_retriever2.py` and `retrieval_generation.py` for the current `max_tokens` tuning.
 
-- **Faithfulness (0.881)**: The chatbot rarely hallucinates; it sticks to retrieved product data
-- **Response Relevancy (0.841)**: User questions are answered appropriately
-- **Context Recall (0.957)**: Excellent - finds most of the truly relevant products
-- **Context Precision (0.217)**: Lower precision indicates the retriever brings in some irrelevant items alongside relevant ones (trade-off for high recall)
-- **Latency Note**: The 31.52s median latency **includes a 45s artificial delay** (`RAG_PIPELINE_DELAY_SECONDS=45`) to avoid hitting Groq's rate limits during evaluation. In production without this delay, latency would be ~2-5s.
+**Root cause diagnosis:** the baseline retrieved `top_k=5` chunks per query, but most questions in the eval set have only 1-2 truly relevant items — precision was mathematically capped low regardless of ranking quality, while recall was already perfect. The fix was reducing `top_k` at the actual Qdrant query (`retrieval_generation.py::rag_pipeline`), not just trimming what got formatted into the prompt — an important first attempt that measured no change, because it filtered *after* retrieval instead of retrieving less.
 
-### 🔬 Running Evaluations
+### Running the benchmark
 
 ```bash
-# Set rate-limit delay (adjust as needed)
-export RAG_PIPELINE_DELAY_SECONDS=45  # or 0 for no delay
-
-# Run evaluation
-make run-evals-retriever
-# or manually:
-uv run --env-file .env python apps/api/evals/eval_retriever.py
+uv run --package api python apps/api/evals/eval_retriever2.py
 ```
 
-Results are uploaded to **LangSmith** for tracking and analysis. View experiments at: https://smith.langchain.com/
-
-## 🔧 API Reference
-
-### `POST /rag`
-
-Generate a chatbot response for a user query.
-
-**Request:**
-```json
-{
-  "query": "I'm looking for a jazz album with piano improvisations"
-}
-```
-
-**Response:**
-```json
-{
-  "request_id": "abc-123-def",
-  "answer": "Based on your query, I found a jazz album that matches...",
-  "used_context": [
-    {
-      "image_url": "https://m.media-amazon.com/images/I/517h9OROQAL.jpg",
-      "price": 14.98,
-      "description": "Solo acoustic fingerstyle guitar."
-    }
-  ]
-}
-```
-
-**Headers:**
-- `X-Request-ID`: Unique request identifier for tracing
-
-**Status:** 200 OK
+Uses a Gemini judge by default for RAGAS scoring (`EVAL_JUDGE_PROVIDER=groq` to force Groq instead — found to fail ~100% of the time on the more complex Faithfulness/ResponseRelevancy prompts, not just occasionally). Results post to LangSmith under the `retriever-*` experiment prefix.
 
 ## 🗂️ Project Structure
 
 ```
 .
 ├── apps/
-│   ├── api/                          # FastAPI backend
+│   ├── api/
 │   │   ├── src/api/
-│   │   │   ├── app.py               # FastAPI app + middleware
-│   │   │   ├── api/
-│   │   │   │   ├── endpoints.py     # /rag endpoint
-│   │   │   │   ├── models.py        # Pydantic request/response models
-│   │   │   │   └── middleware.py    # Request ID middleware
+│   │   │   ├── app.py                     # FastAPI app; self-provisions checkpoint tables on startup
+│   │   │   ├── api/                       # endpoints, request/response models, middleware
 │   │   │   ├── agents/
-│   │   │   │   ├── retrieval_generation.py  # Core RAG pipeline
-│   │   │   │   └── prompts/
-│   │   │   │       └── retrieval_generation.yaml  # LLM prompt template
-│   │   │   └── core/
-│   │   │       └── config.py        # Configuration from .env
-│   │   ├── Dockerfile
-│   │   └── pyproject.toml
-│   │
-│   └── chatbot-ui/                   # Streamlit frontend
-│       ├── src/chatbot_ui/
-│       │   └── app.py               # Main Streamlit app
-│       │   └── core/
-│       │       └── config.py        # UI configuration
-│       ├── Dockerfile
-│       └── pyproject.toml
-│
-├── data/                            # Product catalog (Amazon CDs & Vinyl)
-│   ├── CDs_and_Vinyl.jsonl          # Product metadata and reviews
-│   └── meta_CDs_and_Vinyl.jsonl     # Structured product metadata
-│
-├── evals/                           # Evaluation framework
-│   ├── eval_retriever.py           # RAGAS evaluation script
-│   └── eval_results.md             # Evaluation metrics and results
-│
-├── qdrant_storage/                  # Qdrant persistence (gitignored)
-├── docker-compose.yaml              # Orchestrates all services
-├── Makefile                         # Convenience commands
-├── pyproject.toml                   # Root workspace config (uv)
-├── .env.example                     # Environment template
-└── README.md                        # This file
+│   │   │   │   ├── graph.py                # coordinator/product_qa/shopping_cart LangGraph workflow
+│   │   │   │   ├── agents.py               # agent node functions + response models
+│   │   │   │   ├── tools.py                # Qdrant retrieval + shopping cart tools
+│   │   │   │   ├── retrieval_generation.py # single-shot RAG pipeline (used by evals)
+│   │   │   │   └── prompts/                # per-agent YAML prompt templates
+│   │   │   └── core/                       # config, LLM client (with key rotation), embeddings
+│   │   ├── evals/                          # RAGAS benchmark scripts
+│   │   ├── scripts/                        # reindexing + Qdrant Cloud migration
+│   │   └── Dockerfile
+│   ├── chatbot-ui/                         # Streamlit frontend
+│   ├── items_mcp_server/                   # standalone MCP server exposing item retrieval
+│   └── reviews_mcp_server/                 # standalone MCP server exposing review retrieval
+├── notebooks/                              # week-by-week bootcamp notebooks (source of truth
+│                                            # for what's since been ported into apps/api)
+├── scripts/sql/shopping_cart_table.sql     # cart schema (auto-applied via docker-entrypoint-initdb.d)
+├── .github/workflows/ci.yml                # import smoke-checks + docker builds per app
+├── render.yaml                             # documents the Render deployment shape
+├── docker-compose.yaml
+└── .env.example
 ```
 
-## 🧠 How It Works: The RAG Pipeline
+## 🔧 API Reference
 
-### Step-by-Step
+### `POST /rag/`
 
-```python
-# Simplified pipeline flow
-query = "Recommend a classical piano album"
-
-# 1. RETRIEVE
-embedding = hugging_face.embed(query)  # → [384-dim vector]
-results = qdrant.hybrid_search(
-    vector=embedding,
-    keyword=query,  # BM25
-    fusion="rrf"
-)
-# Returns: top 5 product chunks with IDs, descriptions, ratings
-
-# 2. FORMAT CONTEXT
-context = "\n".join([
-    f"- ID: {item.id}, rating: {item.rating}, description: {item.desc}"
-    for item in results
-])
-
-# 3. GENERATE PROMPT
-prompt = prompt_template.render(
-    preprocessed_context=context,
-    question=query
-)
-
-# 4. CALL LLM
-response = groq.chat.completions.create(
-    model="qwen/qwen3-32b",
-    response_model=RAGGenerationResponse,  # Structured output via instructor
-    messages=[{"role": "system", "content": prompt}]
-)
-
-# 5. EXTRACT PRODUCTS & RENDER
-answer = response.answer
-references = response.references  # List of {id, description}
-
-# 6. FETCH PRODUCT DETAILS (images, prices)
-for ref in references:
-    product = qdrant.get_by_id(ref.id)
-    used_context.append({
-        "image_url": product.image,
-        "price": product.price,
-        "description": ref.description
-    })
+```json
+{
+  "query": "search your catalog for Queen albums on vinyl",
+  "thread_id": "conversation-id",
+  "user_id": "user-id",
+  "cart_id": "cart-id"
+}
 ```
 
-### Core Components
+Returns a `text/event-stream` of progress messages, ending with:
 
-#### 🔍 Hybrid Retrieval (`retrieval_generation.py:90-131`)
-
-The system uses **Qdrant's hybrid search** with:
-
-- **Dense vectors** (`text-embedding-3-small` via OpenAI): Semantic similarity
-- **Sparse vectors** (BM25): Keyword matching
-- **Reciprocal Rank Fusion (RRF)**: Combines both result sets for optimal recall
-
-**Configuration:**
-```python
-prefetch=[
-    Prefetch(
-        query=query_embedding,
-        using="text-embedding-3-small",
-        limit=20  # Recall candidates from vector search
-    ),
-    Prefetch(
-        query=Document(text=query, model="qdrant/bm25"),
-        using="bm25",
-        limit=20  # Recall candidates from keyword search
-    )
-],
-query=FusionQuery(fusion="rrf"),
-limit=5  # Final top-k
+```json
+{
+  "type": "final_result",
+  "data": {
+    "answer": "...",
+    "used_context": [{"image_url": "...", "price": 29.33, "description": "..."}],
+    "trace_id": "..."
+  }
+}
 ```
 
-#### 🎯 Structured LLM Output
+### `POST /submit_feedback/`
 
-Uses **Instructor** to enforce a Pydantic schema:
-
-```python
-class RAGUsedContext(BaseModel):
-    id: str
-    description: str
-
-class RAGGenerationResponse(BaseModel):
-    answer: str
-    references: list[RAGUsedContext]
-```
-
-This guarantees the LLM returns **exact product IDs** that can be looked up for images/prices.
-
-#### 💬 Prompt Engineering
-
-The prompt template (`retrieval_generation.yaml`) instructs the LLM to:
-
-1. Answer based **only** on provided context (no hallucinations)
-2. Return **detailed specifications** in bullet points
-3. Provide **short descriptions** of referenced products
-4. **Never expose** product IDs in the final answer (only to the system)
-
-### Model Choice: Why `qwen/qwen3-32b`?
-
-- ✅ **Speed**: Groq's LPU inference provides ~200 tokens/sec
-- ✅ **Quality**: 32B parameter model with reasoning capabilities
-- ✅ **Cost**: Currently free tier on Groq
-- ✅ **Structured Output**: Instructor integration works reliably
-
-## ⚙️ Configuration & Environment
-
-### All Environment Variables
-
-OpenAI embeddings are the default retrieval path:
-
-```env
-OPENAI_API_KEY=your_openai_api_key_here
-EMBEDDING_PROVIDER=openai
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-OPENAI_EMBEDDING_DIMENSIONS=1536
-QDRANT_COLLECTION=amazon-items-collection-02-openai-small
-QDRANT_SPARSE_VECTOR_NAME=bm25
-```
-
-The old Hugging Face MiniLM settings are still available only if you explicitly set `EMBEDDING_PROVIDER=huggingface`.
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `GROQ_API_KEY` | ✅ Yes | — | Groq Cloud API key |
-| `GEMINI_API_KEY` | ❌ No | — | Gemini API key (or use `GOOGLE_API_KEY`) |
-| `GOOGLE_API_KEY` | ❌ No | — | Alternative to `GEMINI_API_KEY` |
-| `HF_API_TOKEN` | ⚠️ Recommended | — | Hugging Face token for higher rate limits |
-| `HF_EMBEDDING_MODEL` | ❌ No | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
-| `QDRANT_URL` | ❌ No | `http://qdrant:6333` | Qdrant connection URL |
-| `API_URL` | ❌ No | `http://api:8000` | Backend URL for frontend |
-| `RAG_PIPELINE_DELAY_SECONDS` | ❌ No | `30` | Rate-limit delay before RAG calls |
-
-### Docker vs Local
-
-- **Docker Compose**: `QDRANT_URL=http://qdrant:6333`, `API_URL=http://api:8000`
-- **Local Development**: `QDRANT_URL=http://localhost:6333`, `API_URL=http://localhost:8000`
-
-## 🧪 Testing & Evaluation
-
-### Unit/Integration Testing
-
-The project uses **RAGAS** for end-to-end evaluation:
-
-```bash
-# Run with 45s delay to respect Groq rate limits
-RAG_PIPELINE_DELAY_SECONDS=45 make run-evals-retriever
-```
-
-**Test Dataset:** 28 curated queries with expected product references
-**Framework:** RAGAS 0.4.3
-**Evaluation LLM:** Gemini 1.5 Flash Lite (for scoring)
-**Scoring Metrics:**
-
-1. **Faithfulness** - Does the answer stick to retrieved context?
-2. **Response Relevancy** - Is the answer relevant to the query?
-3. **Context Recall** - Are all relevant products retrieved?
-4. **Context Precision** - Are retrieved products actually relevant?
-
-### Manual Testing
-
-```bash
-# Start the UI and try these queries:
-- "Recommend a jazz piano album"
-- "Find classical music under $20"
-- "I want a blues CD with high ratings"
-- "Show me folk music suitable for relaxation"
-
-# Check logs for performance:
-tail -f logs/api.log
-```
-
-## 📈 Performance Considerations
-
-### Latency Breakdown
-
-| Component | Approx. Time |
-|-----------|--------------|
-| OpenAI embedding | 300ms - 1s |
-| Qdrant hybrid search | 100-300ms |
-| Groq LLM inference | 1-2s |
-| Structured output parsing | 100ms |
-| **Total (without delays)** | **~2-4s** |
-| **Total (with rate-limit delay)** | **~45-50s** |
-
-### Rate Limit Handling
-
-During evaluation, we deliberately add a delay to avoid hitting Groq's rate limits:
-
-```python
-RAG_PIPELINE_DELAY_SECONDS = float(os.getenv("RAG_PIPELINE_DELAY_SECONDS", "30"))
-
-def run_rag_with_rate_limit_spacing(inputs: dict):
-    if RAG_PIPELINE_DELAY_SECONDS > 0:
-        time.sleep(RAG_PIPELINE_DELAY_SECONDS)
-    return rag_pipeline(inputs["question"], qdrant_client)
-```
-
-Set `RAG_PIPELINE_DELAY_SECONDS=0` for production use with proper rate-limit handling (retries with exponential backoff recommended).
-
-## 🔒 Security & Best Practices
-
-- ✅ **Secrets management**: `.env` file gitignored
-- ✅ **Pydantic validation**: Request/response models validated
-- ✅ **CORS configured**: Adjust `allow_origins` for production
-- ✅ **Request ID tracing**: `X-Request-ID` passed through all logs
-- ✅ **Structured logging**: JSON-formatted logs with request context
-- ✅ **LangSmith tracing**: All LLM calls traced for monitoring
+Submits thumbs up/down + optional text feedback for a trace, forwarded to LangSmith.
 
 ## 🐛 Troubleshooting
 
-### Qdrant Connection Error
-```bash
-# Check if Qdrant is running
-curl http://localhost:6333/healthz
+- **`No user query found in messages`** (Groq only): every LLM call needs at least one `user`-role message — a system-only prompt that OpenAI tolerates gets rejected outright by Groq's chat template.
+- **Qdrant `400 Bad Request: Index required but not found`**: Qdrant Cloud enforces payload indexes for filtered fields that local Qdrant doesn't require. Create one with `PUT /collections/{name}/index` (`field_schema: "keyword"`) for any field you filter on (e.g. `parent_asin`).
+- **Groq `organization_restricted`**: account-level, not fixable in code — remove that key from rotation and check the Groq console.
+- **`psql`/direct Postgres connection resets over a VPN**: if you're behind something like Cloudflare WARP, raw TCP+TLS to a managed Postgres can fail unpredictably even though the port is reachable. Prefer running one-off admin scripts *from* the deployed service (`render ssh`) over a flaky local network path.
 
-# If using Docker, verify container:
-docker ps | grep qdrant
-```
+## 📚 Data
 
-### Groq Rate Limits
-- Reduce batch size or add delays: `RAG_PIPELINE_DELAY_SECONDS=60`
-- Check quota: https://console.groq.com/settings/limits
-
-### Hugging Face Timeout
-```python
-# Increase timeout in retrieval_generation.py:
-with urlopen(request, timeout=120) as response:  # Currently 120s
-```
-
-### Docker Compose Services Not Starting
-```bash
-# Rebuild with no cache
-docker compose up --build --force-recreate
-```
-
-## 📚 Data: Amazon CDs & Vinyl Dataset
-
-The chatbot is trained on the **Amazon CDs & Vinyl** dataset (~1.5M products). The data includes:
-
-- Product metadata (title, artist, price, category, description)
-- Customer reviews and ratings
-- Product images (various resolutions)
-- ASIN identifiers (Amazon Standard Identification Numbers)
-
-**Sample Products:**
-- Classical piano recordings
-- Jazz improvisation albums
-- Soundtrack collections
-- International music
-- Genre: Rock, Pop, Hip-Hop, Electronic, Folk, etc.
-
-This diverse catalog makes for interesting conversational queries across multiple music genres.
-
-## 🚧 Future Improvements
-
-1. **🔄 Query Rewriting**: Improve retrieval for complex multi-intent queries
-2. **🎵 Audio Previews**: Integrate 30-second audio samples in UI
-3. **📱 Mobile Responsive**: Better UI for smaller screens
-4. **🔍 Faceted Search**: Filter by genre, price range, rating, release date
-5. **👤 User Personalization**: Track user preferences and browsing history
-6. **💾 Caching Layer**: Redis caching for frequent queries
-7. **🧠 Better Embeddings**: Fine-tuned embedding model on music domain
-8. **📊 Analytics Dashboard**: Monitoring usage patterns, popular queries
-9. **🎯 A/B Testing**: Compare different LLM providers/models
-10. **⚡ Async API**: Async endpoints for higher throughput
+Amazon CDs & Vinyl catalog — product metadata, reviews, ratings, images. Catalog is music-only by design (the agent prompt explicitly declines out-of-catalog requests rather than hallucinating availability).
 
 ## 🤝 Contributing
 
-This is a bootcamp project. To extend:
-
-1. Add new LLM providers (OpenAI, Anthropic, etc.)
-2. Experiment with different embedding models
-3. Improve the prompt template with few-shot examples
-4. Add unit tests for the retrieval pipeline
-5. Implement rate-limit handling (retries, circuit breaker)
+Bootcamp project. Notebooks under `notebooks/weekN/` are the working/exploratory versions of what eventually gets ported into `apps/api` — check there first if you're extending agent behavior, since that's usually where a feature gets prototyped before it's productionized.
 
 ## 📄 License
 
-Educational project - no license specified.
-
-## 🙏 Acknowledgments
-
-- **Dataset**: Amazon product data (publicly available)
-- **LLM**: Groq for fast, free inference
-- **Vector DB**: Qdrant for hybrid search
-- **UI**: Streamlit for rapid prototyping
-- **Framework**: FastAPI for robust API
+Educational project — no license specified.
 
 ---
 
-**Built with ❤️ as part of the AI Engineering Bootcamp**
-
-*Questions or feedback? Open an issue or reach out!*
+**Built as part of the AI Engineering Bootcamp**

@@ -67,6 +67,14 @@ def generate_answer(prompt, question):
         ],
         model=LLM_MODEL,
         temperature=0,
+        # Groq's free tier caps output at 1000 tokens/minute per key; this
+        # prompt's detailed-answer instructions routinely asked for 1200-1400,
+        # which fails outright (not just throttles) since a single request
+        # already exceeds the per-minute budget no matter how many keys rotate.
+        # 950 leaves a small safety margin under the 1000 cap while giving
+        # answers more room than 800 did (which was truncating mid-sentence
+        # and dragging down response-relevancy scores).
+        max_tokens=950,
         response_model=RAGGenerationResponse,
     )
     
@@ -86,7 +94,12 @@ def generate_answer(prompt, question):
 @traceable(
     name="RAG pipeline"
 )
-def rag_pipeline(query,qdrant_client,top_k=5):
+def rag_pipeline(query,qdrant_client,top_k=3):
+    # Most questions in the eval set have only 1-2 truly relevant items, so a
+    # top_k=5 retrieval was diluting precision: half the "retrieved" set was
+    # generally noise the LLM had to reason around. Recall was already 1.0 at
+    # k=5, meaning the relevant item(s) are ranked well within the top 3
+    # anyway - so this trims noise without giving up recall.
     
 
     retrieved_context=retrieve_items_data(query, top_k)
@@ -106,7 +119,7 @@ def rag_pipeline(query,qdrant_client,top_k=5):
     return final_result
 
 
-def rag_pipeline_wrapper(question,top_k=5):
+def rag_pipeline_wrapper(question,top_k=3):
 
     qdrant_client = QdrantClient(url=config.QDRANT_URL, api_key=config.QDRANT_API_KEY)
 

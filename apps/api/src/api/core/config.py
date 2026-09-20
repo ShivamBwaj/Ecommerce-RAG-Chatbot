@@ -4,6 +4,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Config(BaseSettings):
     OPENAI_API_KEY: str | None = None
     GROQ_API_KEY: str | None = None
+    GROQ_API_KEY2: str | None = None
+    GROQ_API_KEY3: str | None = None
+    GROQ_API_KEY4: str | None = None
+    GROQ_API_KEY5: str | None = None
+    GROQ_API_KEY6: str | None = None
+    GROQ_API_KEY7: str | None = None
     GEMINI_API_KEY: str | None = None
     GOOGLE_API_KEY: str | None = None
     HF_API_TOKEN: str | None = None

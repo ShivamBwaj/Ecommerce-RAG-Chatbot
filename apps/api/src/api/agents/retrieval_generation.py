@@ -108,7 +108,7 @@ def rag_pipeline(query,qdrant_client,top_k=5):
 
 def rag_pipeline_wrapper(question,top_k=5):
 
-    qdrant_client = QdrantClient(url=config.QDRANT_URL)
+    qdrant_client = QdrantClient(url=config.QDRANT_URL, api_key=config.QDRANT_API_KEY)
 
     result= rag_pipeline(question,qdrant_client,top_k)
 

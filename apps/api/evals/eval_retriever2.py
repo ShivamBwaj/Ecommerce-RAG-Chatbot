@@ -63,7 +63,15 @@ groq_api_keys = [
 ]
 valid_groq_keys = [k for k in groq_api_keys if k]
 
-if valid_groq_keys:
+# The Groq-backed judge (see GroqRagasLLM below) frequently fails to return
+# strict JSON for RAGAS's more complex Faithfulness/ResponseRelevancy prompts,
+# even with response_format=json_object - observed as a ~100% failure rate on
+# those two metrics in practice, not occasional flakiness. Default to the
+# Gemini judge (used for generation-independent scoring only, so it doesn't
+# affect which LLM answers the actual questions) unless explicitly overridden.
+_use_groq_judge = valid_groq_keys and os.getenv("EVAL_JUDGE_PROVIDER", "gemini").lower() == "groq"
+
+if _use_groq_judge:
     # Groq judge model for RAGAS (no langchain-groq dependency needed).
     from groq import Groq
     from langchain_core.callbacks import Callbacks

@@ -15,6 +15,26 @@ from api.core.embeddings import get_embedding
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import numpy as np
+import time
+from qdrant_client.http.exceptions import UnexpectedResponse
+import httpx
+
+
+def _with_retry(fn, attempts: int = 3, base_delay: float = 1.0):
+    """Retry a Qdrant call on transient failures (free-tier rate limiting
+    returns 403/429, not just 5xx) with a short exponential backoff."""
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except (UnexpectedResponse, httpx.HTTPError) as exc:
+            last_error = exc
+            status = getattr(exc, "status_code", None)
+            if status is not None and status not in (403, 429, 500, 502, 503, 504):
+                raise
+            if attempt < attempts - 1:
+                time.sleep(base_delay * (2**attempt))
+    raise last_error
 
 
 
@@ -49,7 +69,7 @@ def get_formatted_items_context(query: str, top_k: int = 5) -> str:
 @traceable(name="retrieve data", run_type="retriever")
 def retrieve_items_data(query: str, top_k: int = 5) -> dict:
     query_embedding = get_embedding(query)
-    qdrant_client = QdrantClient(url=config.QDRANT_URL)
+    qdrant_client = QdrantClient(url=config.QDRANT_URL, api_key=config.QDRANT_API_KEY)
     search_result = qdrant_client.query_points(
         collection_name=config.QDRANT_COLLECTION,
         prefetch=[
@@ -118,7 +138,7 @@ def get_item_payload_by_parent_asin(
 @traceable(name="retrieve reviews data", run_type="retriever")
 def retrieve_reviews_data(query,item_list, top_k: int = 5) -> dict:
     query_embedding = get_embedding(query)
-    qdrant_client = QdrantClient(url=config.QDRANT_URL)
+    qdrant_client = QdrantClient(url=config.QDRANT_URL, api_key=config.QDRANT_API_KEY)
     results=qdrant_client.query_points(
             collection_name="amazon-items-collection-03-hf-reviews",
             prefetch=[

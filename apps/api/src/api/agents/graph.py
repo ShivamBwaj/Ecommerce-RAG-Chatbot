@@ -246,6 +246,14 @@ def rag_agent_stream_wrapper(question: str, thread_id: str, user_id: str = "", c
         ))
         return
 
+    if not result.get("answer"):
+        # The coordinator hit its iteration cap (coordinator_agent_edge -> "end")
+        # without ever setting final_answer=True, so "answer" was never populated.
+        result["answer"] = (
+            "I wasn't able to fully answer that within the usual number of steps. "
+            "Could you rephrase your question, or ask for one thing at a time?"
+        )
+
     used_context = []
     for item in result.get("references", []):
         payload = get_item_payload_by_parent_asin(qdrant_client, item.id)

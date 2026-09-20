@@ -32,7 +32,7 @@ import time
 # Free-tier LLM keys (e.g. Groq) rate-limit and back off for several seconds per
 # call; with multiple agent hops per turn that can compound past what a client
 # or proxy will wait on. Bail out with a clear message instead of hanging.
-STREAM_TIMEOUT_SECONDS = 55
+STREAM_TIMEOUT_SECONDS = 120
 
 
 class State(BaseModel):
